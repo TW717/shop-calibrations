@@ -3,7 +3,22 @@
 "use strict";
 
 const Dates = (() => {
-  const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sept", "Oct", "Nov", "Dec"];
+  const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  const pad = n => String(n).padStart(2, "0");
+  // The desktop's date formats (helpers.DATE_FORMATS): its on-screen one comes in the file
+  const FORMATS = {
+    mdy_comma: d => `${MONTHS[d.getMonth()]} ${d.getDate()}, ${d.getFullYear()}`,
+    mdy: d => `${MONTHS[d.getMonth()]} ${d.getDate()} ${d.getFullYear()}`,
+    dmy: d => `${d.getDate()} ${MONTHS[d.getMonth()]} ${d.getFullYear()}`,
+    iso: d => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`,
+    mdy_num: d => `${pad(d.getMonth() + 1)}/${pad(d.getDate())}/${d.getFullYear()}`,
+    dmy_num: d => `${pad(d.getDate())}/${pad(d.getMonth() + 1)}/${d.getFullYear()}`,
+  };
+  let format = "mdy_comma";
+
+  function setFormat(key) {
+    format = FORMATS[key] ? key : "mdy_comma";
+  }
   const DAY = 86400000;
 
   function parse(iso) {
@@ -17,18 +32,18 @@ const Dates = (() => {
     return new Date(d.getFullYear(), d.getMonth(), d.getDate());
   }
 
-  // '2026-09-25' -> 'Sept 25 2026' (anything else is shown as it is)
+  // '2026-09-25' -> 'Sep 25, 2026', in the format in use (anything else is shown as it is)
   function display(iso) {
     const d = parse(iso);
-    return d ? `${MONTHS[d.getMonth()]} ${d.getDate()} ${d.getFullYear()}` : (iso || "");
+    return d ? FORMATS[format](d) : (iso || "");
   }
 
-  // A moment (the file's expiry) -> 'Oct 9 2026, 3:15 PM' in the phone's time
+  // A moment (the file's expiry) -> 'Oct 9, 2026 3:15 PM' in the phone's time
   function displayMoment(text) {
     const d = new Date(text);
     if (isNaN(d)) return text || "";
     const time = d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
-    return `${MONTHS[d.getMonth()]} ${d.getDate()} ${d.getFullYear()}, ${time}`;
+    return `${FORMATS[format](d)} ${time}`;
   }
 
   function daysUntil(iso, today = new Date()) {
@@ -75,5 +90,5 @@ const Dates = (() => {
     return `${count} due within ${daysText(rules.due_soon)}`;
   }
 
-  return { display, displayMoment, daysUntil, severity, whenText, overdueCountText, dueSoonCountText };
+  return { setFormat, display, displayMoment, daysUntil, severity, whenText, overdueCountText, dueSoonCountText };
 })();

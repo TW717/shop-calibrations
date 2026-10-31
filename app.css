@@ -114,6 +114,7 @@ h1, h2, p { margin: 0; }
 .dot.red { background: var(--due-red); }
 .dot.yellow { background: var(--due-yellow); }
 .dot.green { background: var(--due-green); }
+.no-dots .row .dot { display: none; }      /* (Admin Settings > Due Indicators: no dots in the lists) */
 .row-main { display: flex; flex-direction: column; gap: 2px; flex-grow: 1; min-width: 0; }
 .row-id { font-size: 16px; font-weight: 700; }
 .row-name { font-size: 14px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

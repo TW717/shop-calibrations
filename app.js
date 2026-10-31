@@ -19,7 +19,7 @@
   const STORE_WORK = "calcheck.work";        // the entries made here (locked)
   const STORE_WORK_INFO = "calcheck.workInfo";   // just {session, total, unsent}: readable before the PIN
   const FREE_TRIES = 5, WAIT_SECONDS = 60;
-  const APP_VERSION = "a16";                  // (shown on the login screen; the same as VERSION in sw.js)
+  const APP_VERSION = "a21";                  // (shown on the login screen; the same as VERSION in sw.js)
   const STATUSES = ["Active", "Reference Only", "Damaged", "Removed from Service"];
 
   const app = document.getElementById("app");
@@ -448,6 +448,9 @@
   // The PC's due-date colours (Admin Settings > Due Colours), when changed
   // from the built-in ones: { red: { dot, text, bg }, ... }. See app.css.
   function applyDueColours() {
+    // (the tool lists' dots: off when Admin Settings > Due Indicators says so)
+    document.documentElement.classList.toggle("no-dots", !!state.data && state.data.due_dots === false);
+    Dates.setFormat(state.data && state.data.date_format);    // (dates as on the PC's screen)
     const root = document.documentElement.style;
     const colours = (state.data && state.data.due_colours) || {};
     for (const sev of ["red", "yellow", "green", "none"]) {
@@ -630,18 +633,20 @@
                         : h("span", {}, "No due date")),
         mine.length ? [h("h2", {}, "On this device"), h("section", { class: "card entries" }, mine.map(e => entryLine(e)))] : null,
         h("section", { class: "card facts" },
-          fact("Location / Technician", tool.location),
-          fact("Interval", tool.interval),
-          fact("Manufacturer / Model", [tool.manufacturer, tool.model].filter(Boolean).join(" ")),
-          fact("Serial", tool.serial),
-          fact("Acceptable Deviation", tool.deviation),
-          fact("Parameter", tool.parameter),
+          // (the tool fields as laid out on the PC: Admin Settings > Tool Fields)
+          tool.fields ? tool.fields.map(f => fact(f.label, f.value)) : [
+            fact("Location / Technician", tool.location),
+            fact("Interval", tool.interval),
+            fact("Manufacturer / Model", [tool.manufacturer, tool.model].filter(Boolean).join(" ")),
+            fact("Serial", tool.serial),
+            fact("Acceptable Deviation", tool.deviation),
+            fact("Environment", tool.parameter)],
           fact("Category", tool.category),
           fact("Last calibrated", Dates.display(tool.last_date))),
         h("h2", {}, "Ranges"),
         h("section", { class: "card" }, tool.ranges.length
           ? tool.ranges.map((r, i) => h("div", { class: "line" },
-              h("span", { class: "line-main" }, h("span", {}, r.range || `Range ${i + 1}`), h("span", {}, r.standard ? `Standard: ${r.standard}` : "No standard set"))))
+              h("span", { class: "line-main" }, h("span", {}, r.range || `Range ${i + 1}`), h("span", {}, r.standard ? `Standard: ${r.shown || r.standard}` : "No standard set"))))
           : h("p", { class: "empty" }, "No ranges set up for this tool")),
         h("h2", {}, "Calibration history"),
         h("section", { class: "card" }, tool.history.length
@@ -777,7 +782,7 @@
         setResult(row.result === value ? "none" : value);
       }
 
-      // Pass / Fail chosen from the readings until someone picks one themselves: the After Adj.
+      // Pass / Fail chosen from the readings until someone picks one themselves: the As Left
       // reading when there is one (adjusted back into tolerance = Pass), else the As Found
       function autoResult() {
         if (auto.byHand) return;
@@ -822,7 +827,7 @@
         rows.length > 1 ? h("span", { class: "range-num" }, `Range ${i + 1} of ${rows.length}`) : null,
         h("div", { class: "range-head" }, h("label", { class: "field compact" }, "Range", rangeIn),
           h("label", { class: "field compact" }, "Standard used", stdIn)),
-        h("div", { class: "pair" }, h("label", { class: "field" }, "As Found", found), h("label", { class: "field" }, "After Adj.", adj)),
+        h("div", { class: "pair" }, h("label", { class: "field" }, "As Found", found), h("label", { class: "field" }, "As Left", adj)),
         outNote, shortNote,
         h("div", { class: "pair", role: "group", "aria-label": `Result for ${row.range || `range ${i + 1}`}` }, pass, fail),
         h("label", { class: "field" }, "Remarks", remarks));
@@ -851,7 +856,7 @@
       if (unlocked && cards.some(c => !c.rangeIn.value.trim())) return formError(errors, "Range can't be left blank.");
       if (cards.some(c => !["pass", "fail"].includes(c.row.result))) return formError(errors, "Tick Pass or Fail for every range before saving.");
       // (a warning: a reading shorter than the range can be saved anyway)
-      const short = cards.flatMap(c => [[c.found, "As Found"], [c.adj, "After Adj."]].map(([box, name]) => {
+      const short = cards.flatMap(c => [[c.found, "As Found"], [c.adj, "As Left"]].map(([box, name]) => {
         const n = box.value !== c.saved[box === c.found ? "as_found" : "after_adj"] && Rules.readingTooShort(c.rangeIn.value, box.value);
         return n ? `Range ${c.rangeIn.value.trim()}: ${name} – ${shortHint(c.rangeIn.value, n)}` : null;
       })).filter(Boolean);
@@ -982,7 +987,7 @@
           : h("section", { class: "card" }, entry.ranges.map(r => h("div", { class: "line" },
               h("span", { class: "line-main" },
                 h("span", {}, `${r.range} · ${r.standard}`),
-                h("span", {}, `As Found ${r.as_found || "–"} · After Adj. ${r.after_adj || "–"}${r.remarks ? ` · ${r.remarks}` : ""}`)),
+                h("span", {}, `As Found ${r.as_found || "–"} · As Left ${r.after_adj || "–"}${r.remarks ? ` · ${r.remarks}` : ""}`)),
               h("span", { class: `result ${r.result === "fail" ? "Fail" : "Pass"}` }, r.result === "fail" ? "Fail" : "Pass")))))));
   }
 
