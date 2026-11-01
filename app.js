@@ -19,8 +19,8 @@
   const STORE_WORK = "calcheck.work";        // the entries made here (locked)
   const STORE_WORK_INFO = "calcheck.workInfo";   // just {session, total, unsent}: readable before the PIN
   const FREE_TRIES = 5, WAIT_SECONDS = 60;
-  const APP_VERSION = "a21";                  // (shown on the login screen; the same as VERSION in sw.js)
-  const STATUSES = ["Active", "Reference Only", "Damaged", "Removed from Service"];
+  const APP_VERSION = "a22";                  // (shown on the login screen; the same as VERSION in sw.js)
+  const STATUSES = ["In Service", "Reference Only", "Damaged", "Removed from Service"];
 
   const app = document.getElementById("app");
   const state = { header: null, data: null, user: null, key: null, until: 0, work: null, expired: false,
@@ -639,7 +639,7 @@
             fact("Interval", tool.interval),
             fact("Manufacturer / Model", [tool.manufacturer, tool.model].filter(Boolean).join(" ")),
             fact("Serial", tool.serial),
-            fact("Acceptable Deviation", tool.deviation),
+            fact(tool.deviation_label || "Calibration Tolerance", tool.deviation),
             fact("Environment", tool.parameter)],
           fact("Category", tool.category),
           fact("Last calibrated", Dates.display(tool.last_date))),
@@ -761,7 +761,7 @@
       const found = h("input", { type: "text", inputmode: numeric ? "decimal" : "text", value: row.as_found, autocomplete: "off" });
       const adj = h("input", { type: "text", inputmode: numeric ? "decimal" : "text", value: row.after_adj, autocomplete: "off" });
       const remarks = h("input", { type: "text", value: row.remarks, autocomplete: "off" });
-      const outNote = h("p", { class: "out-note" }, `Outside the Acceptable Deviation (${tool.deviation})`);
+      const outNote = h("p", { class: "out-note" }, `Outside the ${tool.deviation_label || "Calibration Tolerance"} (${tool.deviation})`);
       const shortNote = h("p", { class: "out-note" });     // (a reading with fewer decimal places than the range)
       const pass = h("button", { type: "button", class: "toggle pass" }, "Pass");
       const fail = h("button", { type: "button", class: "toggle fail" }, "Fail");
