@@ -19,7 +19,7 @@
   const STORE_WORK = "calcheck.work";        // the entries made here (locked)
   const STORE_WORK_INFO = "calcheck.workInfo";   // just {session, total, unsent}: readable before the PIN
   const FREE_TRIES = 5, WAIT_SECONDS = 60;
-  const APP_VERSION = "a25";                  // (shown on the login screen; the same as VERSION in sw.js)
+  const APP_VERSION = "a27";                  // (shown on the login screen; the same as VERSION in sw.js)
   const STATUSES = ["In Service", "Reference Only", "Damaged", "Removed from Service"];
 
   const app = document.getElementById("app");
@@ -576,6 +576,14 @@
       h("header", { class: "bar" }, h("div", { class: "bar-row" }, h("h1", {}, "All Tools"), displayButton()),
         searchBox(`Search the ${tools.length} tools`, fill)),
       sessionStrip(), filters, list, tabBar()));
+    fitBarHeight();
+  }
+
+  // The blue bar's height, for the All tab's category headings: they stick just under it
+  // (the bar is stuck at the top) - measured as a screen opens and when the phone turns
+  function fitBarHeight() {
+    const bar = document.querySelector(".screen > .bar");
+    if (bar) document.documentElement.style.setProperty("--bar-height", `${bar.offsetHeight}px`);
   }
 
   function entryLine(e, { withTool = false } = {}) {
@@ -754,7 +762,7 @@
     const tool = current(original);
     const deviation = Rules.parseDeviation(tool.deviation);
     const rows = entry ? entry.ranges.map(r => ({ ...r }))
-      : tool.ranges.map(r => ({ range: r.range, standard: r.standard, as_found: "", after_adj: "N/A", result: "none",
+      : tool.ranges.map(r => ({ range: r.range, standard: r.standard, as_found: "", after_adj: "", result: "none",
                                 remarks: (r.remarks || tool.default_remarks || "").trim() }));
     const startDate = entry ? entry.date : Rules.today();
     const date = dateField("Date", startDate);
@@ -795,6 +803,27 @@
         row.result = value;
         remarks.value = Rules.remarksForResult(remarks.value, { pass: "Pass", fail: "Fail" }[value] || "");
         showResult();
+        syncAsLeft();
+      }
+
+      // As Left (a new calibration), as on the desktop: a Pass copies the As Found reading and
+      // follows it, until a reading is typed there; a Fail leaves it blank, in amber, for the
+      // reading after adjusting (Save asks why if it's still blank)
+      const follow = { on: !entry, value: row.after_adj };
+      function asLeftMissing() {
+        return !entry && row.result === "fail" && !adj.value.trim();
+      }
+      function syncAsLeft() {
+        if (follow.on && adj.value !== follow.value) follow.on = false;     // (typed by hand: left alone now)
+        if (follow.on) {
+          const value = row.result === "pass" ? found.value : "";
+          if (value !== adj.value) {
+            adj.value = value;
+            follow.value = value;
+            autoResult();                       // (judged again with it: the old copy can't make a bad reading a Pass)
+          }
+        }
+        adj.classList.toggle("needs", asLeftMissing() && !adj.classList.contains("out"));
       }
 
       function choose(value) {
@@ -835,13 +864,20 @@
 
       pass.addEventListener("click", () => choose("pass"));
       fail.addEventListener("click", () => choose("fail"));
-      found.addEventListener("input", () => { autoResult(); checkTolerance(); });
-      adj.addEventListener("input", () => { autoResult(); checkTolerance(); });
+      found.addEventListener("input", () => { autoResult(); syncAsLeft(); checkTolerance(); });
+      adj.addEventListener("input", () => { autoResult(); syncAsLeft(); checkTolerance(); });
       rangeIn.addEventListener("input", () => { autoResult(); checkTolerance(); });
       for (const [box, key] of [[found, "as_found"], [adj, "after_adj"]])     // 1.000 -> 1.000" (typed now only)
-        box.addEventListener("blur", () => { if (box.value !== saved[key]) box.value = Rules.addInchMark(box.value, rangeIn.value); });
+        box.addEventListener("blur", () => {
+          if (box.value === saved[key]) return;
+          const followed = follow.on && adj.value === follow.value;
+          box.value = Rules.addInchMark(box.value, rangeIn.value);
+          if (followed && box === adj) follow.value = adj.value;            // (still following, inch mark and all)
+          if (box === found) syncAsLeft();
+        });
       showResult();
       checkTolerance();
+      syncAsLeft();
 
       const card = h("section", { class: "card range-card" },
         rows.length > 1 ? h("span", { class: "range-num" }, `Range ${i + 1} of ${rows.length}`) : null,
@@ -851,7 +887,7 @@
         outNote, shortNote,
         h("div", { class: "pair", role: "group", "aria-label": `Result for ${row.range || `range ${i + 1}`}` }, pass, fail),
         h("label", { class: "field" }, "Remarks", remarks));
-      return { row, card, rangeIn, stdIn, found, adj, remarks, saved, choose };
+      return { row, card, rangeIn, stdIn, found, adj, remarks, saved, choose, asLeftMissing };
     });
 
     function unlockRanges() {
@@ -875,6 +911,18 @@
       if (!(never && !due.input.value) && !Rules.parseIso(due.input.value)) return formError(errors, "Enter the next due date.");
       if (unlocked && cards.some(c => !c.rangeIn.value.trim())) return formError(errors, "Range can't be left blank.");
       if (cards.some(c => !["pass", "fail"].includes(c.row.result))) return formError(errors, "Tick Pass or Fail for every range before saving.");
+      // A failed range with no As Left: saved anyway only with a reason (it goes into that range's Remarks)
+      const missing = cards.filter(c => c.asLeftMissing());
+      if (missing.length) {
+        const several = missing.length > 1;
+        const reason = prompt(`Range ${missing.map(c => c.rangeIn.value.trim() || "?").join(", ")}: ` +
+          `${several ? "these ranges" : "this range"} failed, and As Left (the reading after adjusting) is empty.\n\n` +
+          `You can save without it, with a reason: it goes into ${several ? "their" : "its"} Remarks.\n` +
+          "(e.g. couldn't be adjusted - sent out for repair)", "");
+        if (!reason || !reason.trim()) return formError(errors, "Enter As Left (the reading after adjusting) for each failed range, or save with a reason.");
+        for (const c of missing)
+          c.remarks.value = `${c.remarks.value.trim()}${c.remarks.value.trim() ? " - " : ""}As Left not recorded: ${reason.trim()}`;
+      }
       // (a warning: a reading shorter than the range can be saved anyway)
       const short = cards.flatMap(c => [[c.found, "As Found"], [c.adj, "As Left"]].map(([box, name]) => {
         const n = box.value !== c.saved[box === c.found ? "as_found" : "after_adj"] && Rules.readingTooShort(c.rangeIn.value, box.value);
@@ -1108,15 +1156,19 @@
     stopCamera();
     const video = h("video", { autoplay: "", playsinline: "", "aria-label": "Camera" });
     video.muted = true;
-    const hint = h("p", { class: "hint" }, "Point the camera at the square code", h("br"), "on the tool's calibration label");
+    // (phone cameras can't focus close up - many need 6 in or more - so: farther back, zoomed in)
+    const hint = h("p", { class: "hint" }, "Hold the phone about 6 in (15 cm) away,", h("br"),
+                   "the label's square code in the frame");
     const result = h("div", { role: "status" });
     const torch = h("button", { class: "round", "aria-label": "Light", hidden: "" }, icon("torch"));
+    const zoomButton = h("button", { class: "round zoom", "aria-label": "Zoom", hidden: "" }, "2×");
+    const guide = h("div", { class: "guide" }, h("i"), h("i"), h("i"), h("i"));
     show(h("div", { class: "scanner" },
-      h("div", { class: "view" }, video, h("div", { class: "guide" }, h("i"), h("i"), h("i"), h("i")),
+      h("div", { class: "view" }, video, guide,
         h("div", { class: "top" },
           h("button", { class: "round", "aria-label": "Close", onclick: () => history.length > 1 ? history.back() : go("#/due") },
             icon("close")),
-          h("h1", {}, "Scan a Label"), torch),
+          h("h1", {}, "Scan a Label"), zoomButton, torch),
         hint, result)));
 
     let stream = null, timer = null, stopped = false, lit = false;
@@ -1127,16 +1179,29 @@
     } };
     state.camera = camera;
     const picture = document.createElement("canvas");
-    const SIZE = 480;                           // (the middle of the picture, as read: pixels across)
+    const MOST = 900;                           // (pixels across, at most, of the part read)
+
+    // The part of the camera's picture inside the guide (and a margin round it,
+    // so a code needn't be lined up exactly), in the picture's own pixels: the
+    // video fills the screen cropped ("cover"), so the screen is scaled to it
+    function guideArea() {
+      const box = video.getBoundingClientRect(), g = guide.getBoundingClientRect();
+      const scale = Math.max(box.width / video.videoWidth, box.height / video.videoHeight);
+      const left = (box.width - video.videoWidth * scale) / 2, top = (box.height - video.videoHeight * scale) / 2;
+      const side = Math.min(g.width * 1.3 / scale, video.videoWidth, video.videoHeight);
+      const x = (g.left + g.width / 2 - box.left - left) / scale - side / 2;
+      const y = (g.top + g.height / 2 - box.top - top) / scale - side / 2;
+      return { x: Math.max(0, Math.min(video.videoWidth - side, x)), y: Math.max(0, Math.min(video.videoHeight - side, y)), side };
+    }
 
     async function look() {
       if (stopped) return;
       if (video.readyState >= 2 && video.videoWidth) {
-        // The middle of the picture, where the guide is (a bit more, so a code needn't be lined up exactly)
-        const side = Math.min(video.videoWidth, video.videoHeight) * 0.7;
-        picture.width = picture.height = SIZE;
-        picture.getContext("2d", { willReadFrequently: true }).drawImage(
-          video, (video.videoWidth - side) / 2, (video.videoHeight - side) / 2, side, side, 0, 0, SIZE, SIZE);
+        // The guide's part of the picture, at the camera's own detail (up to MOST pixels across)
+        const { x, y, side } = guideArea();
+        const size = Math.round(Math.min(side, MOST));
+        picture.width = picture.height = size;
+        picture.getContext("2d", { willReadFrequently: true }).drawImage(video, x, y, side, side, 0, 0, size, size);
         let text = null;
         try { text = await Scan.read(picture); } catch (e) {
           hint.textContent = e.message;
@@ -1178,7 +1243,7 @@
       return;
     }
     navigator.mediaDevices.getUserMedia({ audio: false,
-      video: { facingMode: { ideal: "environment" }, width: { ideal: 1280 }, height: { ideal: 720 } } })
+      video: { facingMode: { ideal: "environment" }, width: { ideal: 1920 }, height: { ideal: 1080 } } })
       .then(got => {
         if (stopped) { got.getTracks().forEach(t => t.stop()); return; }
         stream = got;
@@ -1187,6 +1252,18 @@
         const track = got.getVideoTracks()[0];
         const can = track && track.getCapabilities ? track.getCapabilities() : {};
         torch.hidden = !can.torch;              // (a light where the phone lets the app use it: not on iPhones)
+        // Focusing all the time, and zoomed in 2x (1x / 2x / 3x on the button) - where the phone lets it
+        if (track && can.focusMode && can.focusMode.includes("continuous"))
+          track.applyConstraints({ advanced: [{ focusMode: "continuous" }] }).catch(() => {});
+        if (track && can.zoom && can.zoom.max >= 1.5) {
+          const zooms = [1, 2, 3].filter(z => z >= can.zoom.min && z <= can.zoom.max);
+          let at = zooms.includes(2) ? 2 : zooms[zooms.length - 1];
+          const setZoom = z => track.applyConstraints({ advanced: [{ zoom: z }] })
+            .then(() => { at = z; zoomButton.textContent = `${z}×`; }, () => { zoomButton.hidden = true; });
+          zoomButton.hidden = zooms.length < 2;
+          zoomButton.onclick = () => setZoom(zooms[(zooms.indexOf(at) + 1) % zooms.length]);
+          setZoom(at);
+        }
         Scan.loadZxing().catch(() => {});       // (ready before it's needed, where there's no reader of the phone's own)
         look();
       })
@@ -1229,6 +1306,7 @@
   }
 
   window.addEventListener("hashchange", route);
+  window.addEventListener("resize", fitBarHeight);
   // (the camera off while the app is out of sight; back on when it's back, still on Scan a Label)
   document.addEventListener("visibilitychange", () => {
     if (document.hidden) stopCamera();
