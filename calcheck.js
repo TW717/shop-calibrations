@@ -5,7 +5,8 @@
 
 const CalCheck = (() => {
   const FORMAT = "calcheck";
-  const VERSION = 1;
+  const VERSION = 1;                // (results files'; check-out files: VERSIONS)
+  const VERSIONS = [1, 2];          // check-out files this app opens (2: the tool data compressed)
   const enc = new TextEncoder();
 
   function unb64(text) {
@@ -17,7 +18,7 @@ const CalCheck = (() => {
 
   function dataAad(header) {
     const names = header.inspectors.map(i => i.username).join(",");
-    return enc.encode(`${FORMAT}|${VERSION}|${header.session}|${header.created}|${header.expires}|${names}`);
+    return enc.encode(`${FORMAT}|${header.version}|${header.session}|${header.created}|${header.expires}|${names}`);
   }
 
   function keyAad(session, username) {
@@ -30,7 +31,7 @@ const CalCheck = (() => {
     let header;
     try { header = JSON.parse(text); } catch (e) { throw new Error("That isn't a session file."); }
     if (!header || header.format !== FORMAT) throw new Error("That isn't a session file.");
-    if (header.version !== VERSION) throw new Error("This session file needs a newer version of the mobile app. Reload the app while online.");
+    if (!VERSIONS.includes(header.version)) throw new Error("This session file needs a newer version of the mobile app. Reload the app while online.");
     if (!Array.isArray(header.inspectors) || !header.inspectors.length) throw new Error("The file is damaged.");
     return header;
   }
@@ -76,7 +77,16 @@ const CalCheck = (() => {
     } catch (e) {
       throw new Error("The file has been changed or damaged. Ask for a new one.");
     }
+    if (header.version >= 2) plain = await inflate(plain);     // (version 2: compressed before it was locked)
     return JSON.parse(new TextDecoder().decode(plain));
+  }
+
+  // zlib-compressed bytes (Python's zlib.compress) back to the original
+  async function inflate(bytes) {
+    if (typeof DecompressionStream === "undefined")
+      throw new Error("This phone's browser is too old to open this file. Update it, or ask for a new file.");
+    const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream("deflate"));
+    return new Uint8Array(await new Response(stream).arrayBuffer());
   }
 
   function b64(bytes) {

@@ -19,7 +19,7 @@
   const STORE_WORK = "calcheck.work";        // the entries made here (locked)
   const STORE_WORK_INFO = "calcheck.workInfo";   // just {session, total, unsent}: readable before the PIN
   const FREE_TRIES = 5, WAIT_SECONDS = 60;
-  const APP_VERSION = "a23";                  // (shown on the login screen; the same as VERSION in sw.js)
+  const APP_VERSION = "a25";                  // (shown on the login screen; the same as VERSION in sw.js)
   const STATUSES = ["In Service", "Reference Only", "Damaged", "Removed from Service"];
 
   const app = document.getElementById("app");
@@ -60,6 +60,10 @@
     mail: ["M3 5h18v14H3z", "M3 7l9 6 9-6"],
     light: ["M12 8a4 4 0 1 0 0 8a4 4 0 1 0 0-8", "M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"],
     dark: ["M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z"],
+    scan: ["M4 8V6a2 2 0 0 1 2-2h2", "M16 4h2a2 2 0 0 1 2 2v2", "M20 16v2a2 2 0 0 1-2 2h-2", "M8 20H6a2 2 0 0 1-2-2v-2",
+           "M8 9v6", "M11 9v6", "M14 9v6", "M17 9v6"],
+    close: ["M6 6l12 12M18 6L6 18"],
+    torch: ["M8 3h8l-1 6H9z", "M9 9h6v11a1 1 0 0 1-1 1h-4a1 1 0 0 1-1-1z", "M12 13v2"],
   };
   function icon(name, size = 22) {
     const ns = "http://www.w3.org/2000/svg";
@@ -500,7 +504,12 @@
   function searchBox(placeholder, refill) {
     const input = h("input", { type: "search", placeholder, "aria-label": "Search", value: state.search });
     input.addEventListener("input", () => { state.search = input.value; refill(); });
-    return h("label", { class: "search" }, icon("search", 18), input);
+    // (at its end: Scan a Label - a tool's calibration label, read by the camera)
+    const scan = h("button", { type: "button", class: "scan", "aria-label": "Scan a label", onclick: e => {
+      e.preventDefault();
+      go("#/scan");
+    } }, icon("scan", 24));
+    return h("label", { class: "search" }, icon("search", 18), input, scan);
   }
 
   function tabBar() {
@@ -539,7 +548,8 @@
 
   function allScreen() {
     const list = h("main", { class: "list" });
-    const tools = state.data.tools.map(current);
+    // (and the tools to look up only, marked so)
+    const tools = state.data.tools.map(current).concat((state.data.view_tools || []).map(t => ({ ...t, viewOnly: true })));
     const present = new Set(tools.map(t => t.category));
     const categories = (state.data.categories || []).filter(c => present.has(c));
     for (const c of present) if (!categories.includes(c)) categories.push(c);
@@ -556,14 +566,15 @@
           .sort((a, b) => a.tool_id.localeCompare(b.tool_id, undefined, { numeric: true }));
         if (!shown.length) continue;
         list.append(h("h2", { class: "group" }, `${c || "No category"} · ${shown.length}`),
-                    ...shown.map(t => toolRow(t, [t.done ? h("b", { class: "done-mark" }, "Done") : null, t.status])));
+                    ...shown.map(t => toolRow(t, t.viewOnly ? [h("span", { class: "view-mark" }, "View only"), t.status]
+                                                            : [t.done ? h("b", { class: "done-mark" }, "Done") : null, t.status])));
       }
       if (!list.children.length) list.append(h("p", { class: "empty" }, "No tools match your search"));
     }
     fill();
     show(h("div", { class: "screen" },
       h("header", { class: "bar" }, h("div", { class: "bar-row" }, h("h1", {}, "All Tools"), displayButton()),
-        searchBox(`Search the ${state.data.tools.length} tools`, fill)),
+        searchBox(`Search the ${tools.length} tools`, fill)),
       sessionStrip(), filters, list, tabBar()));
   }
 
@@ -611,9 +622,16 @@
     } }, icon("back"));
   }
 
+  // A tool to look up only: in the file's view_tools (Send Tools to Mobile >
+  // Every tool to look up) - its details and last calibrations, never calibrated here
+  function viewTool(toolId) {
+    return (state.data.view_tools || []).find(t => t.tool_id === toolId);
+  }
+
   function toolScreen(toolId) {
-    const original = state.data.tools.find(t => t.tool_id === toolId);
+    const original = state.data.tools.find(t => t.tool_id === toolId) || viewTool(toolId);
     if (!original) { go("#/due"); return; }
+    const viewOnly = !state.data.tools.includes(original);
     const tool = current(original);
     const sev = Dates.severity(tool.due_date, rules());
     const fact = (label, value) => value ? h("div", { class: "fact" }, h("span", {}, label), h("span", {}, value)) : null;
@@ -626,8 +644,10 @@
         h("div", { class: "tool-head" },
           h("div", { class: "bar-row" }, h("h1", {}, tool.tool_id), h("span", { class: "badge" }, tool.status)),
           h("p", {}, tool.name))),
-      h("main", { class: "body with-actions" },
+      h("main", { class: viewOnly ? "body" : "body with-actions" },
         message,
+        viewOnly ? h("div", { class: "note info" }, h("b", {}, "View only"),
+          `Not sent to you to calibrate. As it was on ${Dates.display(state.data.created.slice(0, 10))}, when this file was made.`) : null,
         h("section", { class: `due-card ${sev}` }, h("span", { class: `dot ${sev}` }),
           tool.due_date ? h("span", {}, h("b", {}, `Due ${Dates.display(tool.due_date)}`), ` · ${Dates.whenText(tool.due_date).replace(/^Due /, "")}`)
                         : h("span", {}, "No due date")),
@@ -656,7 +676,7 @@
                 h("span", {}, [e.kind === "custom" ? e.remarks || "Custom entry" : plural(e.ranges, "range"), e.by, e.cal_id].filter(Boolean).join(" · "))),
               h("span", { class: `result ${e.result}` }, e.result)))
           : h("p", { class: "empty" }, "Not calibrated yet"))),
-      state.expired ? null : h("div", { class: "actions" },
+      state.expired || viewOnly ? null : h("div", { class: "actions" },
         h("button", { class: "btn secondary", onclick: () => go(`#/custom/${encodeURIComponent(toolId)}`) }, "Custom Entry"),
         calibrateAction(tool, mine, message))));
   }
@@ -1066,6 +1086,113 @@
   }
 
   // ---------- moving between screens (the phone's back button works) ----------
+  // ---------- Scan a Label: the camera reads a tool's calibration label ----------
+  // (the code holds the Tool ID: a tool sent to calibrate opens ready to; any
+  // other in the file opens view only; one not in the file says so)
+  function stopCamera() {
+    if (state.camera) state.camera.stop();
+    state.camera = null;
+  }
+
+  function cameraTrouble(err) {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia)
+      return "This phone's browser can't use the camera here. Open the app from its https:// address.";
+    if (err && (err.name === "NotAllowedError" || err.name === "SecurityError"))
+      return "The camera isn't allowed for this app. Allow it in the phone's settings (or the browser's), then try again.";
+    if (err && (err.name === "NotFoundError" || err.name === "OverconstrainedError")) return "No camera was found on this device.";
+    if (err && err.name === "NotReadableError") return "The camera is busy in another app. Close it, then try again.";
+    return "The camera couldn't be started.";
+  }
+
+  function scanScreen() {
+    stopCamera();
+    const video = h("video", { autoplay: "", playsinline: "", "aria-label": "Camera" });
+    video.muted = true;
+    const hint = h("p", { class: "hint" }, "Point the camera at the square code", h("br"), "on the tool's calibration label");
+    const result = h("div", { role: "status" });
+    const torch = h("button", { class: "round", "aria-label": "Light", hidden: "" }, icon("torch"));
+    show(h("div", { class: "scanner" },
+      h("div", { class: "view" }, video, h("div", { class: "guide" }, h("i"), h("i"), h("i"), h("i")),
+        h("div", { class: "top" },
+          h("button", { class: "round", "aria-label": "Close", onclick: () => history.length > 1 ? history.back() : go("#/due") },
+            icon("close")),
+          h("h1", {}, "Scan a Label"), torch),
+        hint, result)));
+
+    let stream = null, timer = null, stopped = false, lit = false;
+    const camera = { stop() {
+      stopped = true;
+      clearTimeout(timer);
+      if (stream) stream.getTracks().forEach(t => t.stop());
+    } };
+    state.camera = camera;
+    const picture = document.createElement("canvas");
+    const SIZE = 480;                           // (the middle of the picture, as read: pixels across)
+
+    async function look() {
+      if (stopped) return;
+      if (video.readyState >= 2 && video.videoWidth) {
+        // The middle of the picture, where the guide is (a bit more, so a code needn't be lined up exactly)
+        const side = Math.min(video.videoWidth, video.videoHeight) * 0.7;
+        picture.width = picture.height = SIZE;
+        picture.getContext("2d", { willReadFrequently: true }).drawImage(
+          video, (video.videoWidth - side) / 2, (video.videoHeight - side) / 2, side, side, 0, 0, SIZE, SIZE);
+        let text = null;
+        try { text = await Scan.read(picture); } catch (e) {
+          hint.textContent = e.message;
+        }
+        if (stopped) return;
+        if (text) return found(text.trim());
+      }
+      timer = setTimeout(look, 120);
+    }
+
+    function found(text) {
+      const id = text.toLowerCase();
+      const tool = state.data.tools.find(t => t.tool_id.toLowerCase() === id) ||
+                   (state.data.view_tools || []).find(t => t.tool_id.toLowerCase() === id);
+      if (navigator.vibrate) navigator.vibrate(60);
+      if (tool) {
+        camera.stop();
+        location.replace(`#/tool/${encodeURIComponent(tool.tool_id)}`);     // (Back from the tool: the list, not the camera)
+        return;
+      }
+      result.replaceChildren(h("div", { class: "found" },
+        h("span", { class: "warn", "aria-hidden": "true" }, "!"),
+        h("span", { class: "msg" }, h("b", {}, `${text.slice(0, 30)} isn't in this file`),
+          h("span", {}, "Ask for it to be sent to your phone")),
+        h("button", { onclick: () => { result.replaceChildren(); look(); } }, "Scan Again")));
+    }
+
+    torch.onclick = async () => {
+      const track = stream && stream.getVideoTracks()[0];
+      try {
+        await track.applyConstraints({ advanced: [{ torch: !lit }] });
+        lit = !lit;
+        torch.classList.toggle("on", lit);
+      } catch (e) { torch.hidden = true; }
+    };
+
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      hint.textContent = cameraTrouble(null);
+      return;
+    }
+    navigator.mediaDevices.getUserMedia({ audio: false,
+      video: { facingMode: { ideal: "environment" }, width: { ideal: 1280 }, height: { ideal: 720 } } })
+      .then(got => {
+        if (stopped) { got.getTracks().forEach(t => t.stop()); return; }
+        stream = got;
+        video.srcObject = got;
+        video.play().catch(() => {});
+        const track = got.getVideoTracks()[0];
+        const can = track && track.getCapabilities ? track.getCapabilities() : {};
+        torch.hidden = !can.torch;              // (a light where the phone lets the app use it: not on iPhones)
+        Scan.loadZxing().catch(() => {});       // (ready before it's needed, where there's no reader of the phone's own)
+        look();
+      })
+      .catch(err => { hint.textContent = cameraTrouble(err); });
+  }
+
   function route() {
     if (!state.data) return openScreen();
     if (state.formHash && state.formDirty && location.hash !== state.formHash) {
@@ -1086,6 +1213,8 @@
       return openScreen("The session file has expired and was removed from this device. Ask for a new one.");
     }
     const hash = location.hash;
+    if (hash !== "#/scan") stopCamera();
+    if (hash === "#/scan") return scanScreen();
     const part = prefix => decodeURIComponent(hash.slice(prefix.length));
     const tool = id => state.data.tools.find(t => t.tool_id === id);
     if (hash.startsWith("#/tool/")) return toolScreen(part("#/tool/"));
@@ -1100,6 +1229,11 @@
   }
 
   window.addEventListener("hashchange", route);
+  // (the camera off while the app is out of sight; back on when it's back, still on Scan a Label)
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) stopCamera();
+    else if (location.hash === "#/scan" && state.data) route();
+  });
   document.addEventListener("visibilitychange", () => {
     if (!document.hidden && loggedInTooLong() && !state.formDirty) { lock(); openScreen(); }      // (left open past midnight)
   });
