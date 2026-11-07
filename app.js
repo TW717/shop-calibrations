@@ -1,5 +1,5 @@
-// Calibration Management System, mobile app: the device side of Mobile Devices > Check Out to Mobile.
-// Open a check-out file, log in with a Mobile PIN, browse the tools, calibrate
+// Calibration Management System, mobile app: the device side of Mobile Devices > Send Tools to Mobile.
+// Open a session file, log in with a Mobile PIN, browse the tools, calibrate
 // them (or add custom entries), and send the results back to the desktop.
 //
 // - The file is kept on the phone still locked. After the PIN, the inspector
@@ -19,7 +19,7 @@
   const STORE_WORK = "calcheck.work";        // the entries made here (locked)
   const STORE_WORK_INFO = "calcheck.workInfo";   // just {session, total, unsent}: readable before the PIN
   const FREE_TRIES = 5, WAIT_SECONDS = 60;
-  const APP_VERSION = "a22";                  // (shown on the login screen; the same as VERSION in sw.js)
+  const APP_VERSION = "a23";                  // (shown on the login screen; the same as VERSION in sw.js)
   const STATUSES = ["In Service", "Reference Only", "Damaged", "Removed from Service"];
 
   const app = document.getElementById("app");
@@ -190,7 +190,7 @@
     const unsent = unsentFor(header.session);
     return confirm(unsent
       ? `${plural(unsent, "result")} on this device haven't been sent and will be lost.\n\nRemove the file and the results anyway?`
-      : "Remove the check-out file (and the results already sent) from this device?");
+      : "Remove the session file (and the results already sent) from this device?");
   }
 
   // ---------- staying logged in until midnight ----------
@@ -341,14 +341,14 @@
     const header = storedHeader();
     if (header && CalCheck.isExpired(header) && !unsentFor(header.session)) {
       removeFile();
-      return openScreen(`The check-out file expired on ${Dates.displayMoment(header.expires)} and was removed from this device. Ask for a new one.`);
+      return openScreen(`The session file expired on ${Dates.displayMoment(header.expires)} and was removed from this device. Ask for a new one.`);
     }
     if (header) return loginScreen(header, problem);
 
     show(h("div", { class: "screen" },
-      brandHero("Works offline · nothing is kept until you open a check-out file"),
+      brandHero("Works offline · nothing is kept until you open a session file"),
       h("div", { class: "panel" },
-        h("h2", {}, "Open the check-out file you were emailed"),
+        h("h2", {}, "Open the session file you were emailed"),
         h("p", { class: "small" }, "Save the email's attachment to your device (Files or Downloads) first, then pick it here."),
         h("button", { class: "pick-file", onclick: () => chooseFile(openScreen) }, icon("file", 20), "Choose File"),
         problem && h("div", { class: "note bad", role: "alert" }, problem)),
@@ -401,11 +401,11 @@
     } },
       expired
         ? h("div", { class: "note bad" },
-            h("b", {}, "This check-out file has expired"),
+            h("b", {}, "This session file has expired"),
             h("span", {}, `${plural(unsent, "result")} on this device haven't been sent. Log in and use Send Results.`))
         : h("div", { class: "note ok" },
-            h("b", {}, "Check-out file on this device"),
-            h("span", {}, `${plural(header.tool_count, "tool")} · checked out by ${header.checked_out_by}`),
+            h("b", {}, "Session file on this device"),
+            h("span", {}, `${plural(header.tool_count, "tool")} · sent by ${header.checked_out_by}`),
             h("span", { class: "small" }, `Expires ${Dates.displayMoment(header.expires)} · ${header.session}`),
             unsent ? h("span", { class: "small" }, `${plural(unsent, "result")} not sent yet`) : null),
       h("label", { class: "field", for: "who" }, "Your name", select),
@@ -563,7 +563,7 @@
     fill();
     show(h("div", { class: "screen" },
       h("header", { class: "bar" }, h("div", { class: "bar-row" }, h("h1", {}, "All Tools"), displayButton()),
-        searchBox(`Search the ${state.data.tools.length} checked-out tools`, fill)),
+        searchBox(`Search the ${state.data.tools.length} tools`, fill)),
       sessionStrip(), filters, list, tabBar()));
   }
 
@@ -735,7 +735,7 @@
     const deviation = Rules.parseDeviation(tool.deviation);
     const rows = entry ? entry.ranges.map(r => ({ ...r }))
       : tool.ranges.map(r => ({ range: r.range, standard: r.standard, as_found: "", after_adj: "N/A", result: "none",
-                                remarks: (tool.default_remarks || "").trim() }));
+                                remarks: (r.remarks || tool.default_remarks || "").trim() }));
     const startDate = entry ? entry.date : Rules.today();
     const date = dateField("Date", startDate);
     const due = dateField("Next due", entry ? entry.due_date : Rules.dueFromInterval(startDate, tool.interval),
@@ -1055,9 +1055,9 @@
           h("div", {}, h("b", { class: "muted" }, notDone.length), h("span", {}, "tools not done"))),
         notDone.length ? h("section", { class: "note warn" },
           h("b", {}, `${plural(notDone.length, "tool")} not done`),
-          h("span", {}, `${notDone.slice(0, 12).join(" · ")}${notDone.length > 12 ? " ..." : ""} – they stay due and can go in the next check-out.`)) : null,
+          h("span", {}, `${notDone.slice(0, 12).join(" · ")}${notDone.length > 12 ? " ..." : ""} – they stay due and can go in the next session.`)) : null,
         h("section", { class: "card padded" },
-          h("p", {}, "The results file is locked with this check-out's key, so only the desktop can read it. Email it to whoever does Check In at the computer."),
+          h("p", {}, "The results file is locked with this session's key, so only the desktop can read it. Email it to whoever imports results at the computer."),
           h("p", { class: "small" }, unsent ? `${plural(unsent, "entry", "entries")} not sent yet.`
             : lastSend ? `Everything was sent at ${timeText(lastSend.at)}. Sending again is safe: the desktop adds each entry once.` : "")),
         h("button", { class: "btn wide", disabled: !entries.length, onclick: share }, icon("mail", 20), "Email Results"),
@@ -1083,7 +1083,7 @@
     state.expired = CalCheck.isExpired(state.header);
     if (state.expired && !state.work.entries.some(e => !e.sent_at)) {
       removeFile();
-      return openScreen("The check-out file has expired and was removed from this device. Ask for a new one.");
+      return openScreen("The session file has expired and was removed from this device. Ask for a new one.");
     }
     const hash = location.hash;
     const part = prefix => decodeURIComponent(hash.slice(prefix.length));
@@ -1109,7 +1109,7 @@
 
   if (!window.crypto || !crypto.subtle) {
     show(h("div", { class: "screen" }, brandHero(),
-      h("div", { class: "panel" }, h("div", { class: "note bad" }, "This browser can't unlock check-out files. Open the app's https:// link in Safari or Chrome."))));
+      h("div", { class: "panel" }, h("div", { class: "note bad" }, "This browser can't unlock session files. Open the app's https:// link in Safari or Chrome."))));
     return;
   }
   if ("serviceWorker" in navigator) {

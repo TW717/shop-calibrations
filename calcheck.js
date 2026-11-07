@@ -28,9 +28,9 @@ const CalCheck = (() => {
   // expires. Throws for anything that isn't a check-out file this app reads.
   function readHeader(text) {
     let header;
-    try { header = JSON.parse(text); } catch (e) { throw new Error("That isn't a check-out file."); }
-    if (!header || header.format !== FORMAT) throw new Error("That isn't a check-out file.");
-    if (header.version !== VERSION) throw new Error("This check-out file needs a newer version of the mobile app. Reload the app while online.");
+    try { header = JSON.parse(text); } catch (e) { throw new Error("That isn't a session file."); }
+    if (!header || header.format !== FORMAT) throw new Error("That isn't a session file.");
+    if (header.version !== VERSION) throw new Error("This session file needs a newer version of the mobile app. Reload the app while online.");
     if (!Array.isArray(header.inspectors) || !header.inspectors.length) throw new Error("The file is damaged.");
     return header;
   }
@@ -54,7 +54,7 @@ const CalCheck = (() => {
   // reopen the file without the PIN (the key can be used, never read out).
   async function unlock(header, username, pin) {
     const entry = header.inspectors.find(i => i.username === username);
-    if (!entry) throw new Error("This file wasn't checked out to you.");
+    if (!entry) throw new Error("This file wasn't sent to you.");
     const wrappingKey = await pinKey(pin, unb64(entry.salt), entry.iterations);
     let rawKey;
     try {
