@@ -5,7 +5,7 @@
 "use strict";
 
 const Rules = (() => {
-  const NUMBER = String.raw`[+-]?(?:\d+\.?\d*|\.\d+)`;
+  const NUMBER = String.raw`(?:\d+\.?\d*|\.\d+)`;       // (its sign apart)
   const FRACTION = String.raw`(?:\d+[\s-]+)?\d+\/\d+`;
 
   // Units: {spelling, tidied: [what it measures, its size in that kind's base unit]} (helpers.py UNITS)
@@ -31,12 +31,14 @@ const Rules = (() => {
     "deg": ["angle", 1], "°": ["angle", 1],
     "°f": ["temp f", 1], "f": ["temp f", 1], "degf": ["temp f", 1],
     "°c": ["temp c", 1], "c": ["temp c", 1], "degc": ["temp c", 1],
+    "turns": ["turns", 1],        // (T, Turn, Turn(s), Rev: unitKey spells them all "turns")
   };
 
-  // 'mV' -> 'mv', 'ft-lb' -> 'ftlb', 'kΩ' -> 'kohm', 'in.' -> 'in'
+  // 'mV' -> 'mv', 'ft-lb' -> 'ftlb', 'kΩ' -> 'kohm', 'in.' -> 'in', 'T' / 'Turn(s)' -> 'turns'
   function unitKey(text) {
-    const key = (text || "").toLowerCase().replace(/[\s·.\-]/g, "").replace(/[µμ]/g, "u").replace(/ω/g, "ohm")
+    let key = (text || "").toLowerCase().replace(/[\s·.\-]/g, "").replace(/[µμ]/g, "u").replace(/ω/g, "ohm")
       .replace(/″/g, '"').replace(/ohms/g, "ohm");
+    if (["t", "turn", "turn(s)", "rev", "revs"].includes(key)) key = "turns";
     return key || null;
   }
 
@@ -47,12 +49,14 @@ const Rules = (() => {
     return parseFloat(text);
   }
 
-  // '2.000"' -> [2, '"'], '10.02 V' -> [10.02, 'v'], '1-1/2"' -> [1.5, '"']; ranges, N/A, text -> null
+  // '2.000"' -> [2, '"'], '10.02 V' -> [10.02, 'v'], '1-1/2"' -> [1.5, '"'], '-1/2 T' -> [-0.5, 'turns'],
+  // 'Flush' -> [0, 'turns']; ranges, N/A, text -> null
   function measurementParts(text) {
-    const m = new RegExp(String.raw`^\s*(${FRACTION}|${NUMBER})\s*([^\d\s+\-.\/][^\d]*?)?\s*$`).exec(text || "");
+    if ((text || "").trim().toLowerCase() === "flush") return [0, "turns"];
+    const m = new RegExp(String.raw`^\s*([+-]?)\s*(${FRACTION}|${NUMBER})\s*([^\d\s+\-.\/][^\d]*?)?\s*$`).exec(text || "");
     if (!m) return null;
-    const value = number(m[1]);
-    return value === null ? null : [value, unitKey(m[2])];
+    const value = number(m[2]);
+    return value === null ? null : [m[1] === "-" ? -value : value, unitKey(m[3])];
   }
 
   // '2.000"', '1.998', '.5 in', '10 V', '1/2"' -> the number; anything else ('0" - 1"', N/A, blank) -> null
@@ -135,7 +139,7 @@ const Rules = (() => {
   function addInchMark(reading, rangeText) {
     if (!(rangeText || "").includes('"')) return reading;
     const text = (reading || "").trim();
-    return new RegExp(`^${NUMBER}$`).test(text) ? text + '"' : reading;
+    return new RegExp(`^[+-]?${NUMBER}$`).test(text) ? text + '"' : reading;
   }
 
   // Remarks starting with the word Pass or Fail -> ['pass'/'fail', the rest]; else [null, text]
