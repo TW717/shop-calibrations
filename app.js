@@ -19,7 +19,7 @@
   const STORE_WORK = "calcheck.work";        // the entries made here (locked)
   const STORE_WORK_INFO = "calcheck.workInfo";   // just {session, total, unsent}: readable before the PIN
   const FREE_TRIES = 5, WAIT_SECONDS = 60;
-  const APP_VERSION = "a31";                  // (shown on the login screen; the same as VERSION in sw.js)
+  const APP_VERSION = "a32";                  // (shown on the login screen; the same as VERSION in sw.js)
   const STATUSES = ["In Service", "Reference Only", "Damaged", "Removed from Service"];
 
   const app = document.getElementById("app");
@@ -184,6 +184,11 @@
     return (tool.items || []).filter(i => i.sent);
   }
 
+  // An item as said: 'A · 0" - 1" OD Micrometer' (its Item Code with its name)
+  function itemLabel(item) {
+    return item.code ? `${item.code} · ${item.name}` : item.name;
+  }
+
   function itemOf(tool, id) {
     return (tool.items || []).find(i => String(i.id) === String(id));
   }
@@ -210,8 +215,9 @@
   function entryItemNames(e) {
     const tool = state.data.tools.find(t => t.tool_id === e.tool_id);
     if (!tool || !tool.items) return "";
-    if (e.kind === "custom") return e.item_id ? (itemOf(tool, e.item_id) || { name: "" }).name : "Whole tool";
-    return [...new Set(e.ranges.map(r => (itemOf(tool, r.item_id) || { name: "" }).name))].filter(Boolean).join(", ");
+    const label = id => { const i = itemOf(tool, id); return i ? (i.code || i.name) : ""; };    // (by code: short)
+    if (e.kind === "custom") return e.item_id ? label(e.item_id) : "Whole tool";
+    return [...new Set(e.ranges.map(r => label(r.item_id)))].filter(Boolean).join(", ");
   }
 
   function itemHash(prefix, tool, item) {
@@ -543,7 +549,7 @@
     const sev = Dates.severity(item.due_date, rules());
     return h("button", { class: to ? "row item-pick" : "row sub", onclick: () => go(to || itemHash("tool", tool, item)) },
       h("span", { class: `dot ${sev}`, "aria-label": sev === "none" ? "No due date" : `${sev} dot` }),
-      h("span", { class: "row-main" }, h("span", { class: "row-id" }, item.name),
+      h("span", { class: "row-main" }, h("span", { class: "row-id" }, itemLabel(item)),
         h("span", { class: "row-name" }, item.interval ? `Every ${item.interval}` : tool.tool_id)),
       h("span", { class: "row-side" }, side),
       h("span", { class: "chev" }, icon("chev", 16)));
@@ -719,7 +725,7 @@
     const fact = (label, value) => value ? h("div", { class: "fact" }, h("span", {}, label), h("span", {}, value)) : null;
     const mine = entriesFor(toolId);
     const message = h("div", { role: "alert" });
-    const itemName = id => (itemOf(tool, id) || { name: "" }).name;
+    const itemName = id => { const i = itemOf(tool, id); return i ? itemLabel(i) : ""; };
 
     show(h("div", { class: "screen" },
       h("header", { class: "bar" },
@@ -750,7 +756,7 @@
         tool.items ? [h("h2", {}, `Items · ${tool.items.length}`), h("section", { class: "card entries" }, tool.items.map(i => {
           const isev = Dates.severity(i.due_date, rules());
           return h("button", { class: "entry-row item-line", onclick: () => go(itemHash("tool", tool, i)) },
-            h("span", { class: "entry-top" }, h("span", { class: "row-id" }, h("span", { class: `dot ${isev}` }), " ", i.name),
+            h("span", { class: "entry-top" }, h("span", { class: "row-id" }, h("span", { class: `dot ${isev}` }), " ", itemLabel(i)),
               h("span", { class: "small" }, viewOnly || i.sent ? (i.done ? "Done" : "") : "Not sent to you")),
             h("span", { class: "row-name" }, [i.due_date ? `Due ${Dates.display(i.due_date)}` : "No due date",
                                               i.interval ? `every ${i.interval}` : ""].filter(Boolean).join(" · ")));
@@ -782,7 +788,7 @@
         ? history.map(e => h("div", { class: "line" },
             h("span", { class: "line-main" },
               h("span", {}, Dates.display(e.date)),
-              h("span", {}, [e.items ? (e.items.join(", ") || "Whole tool") : "",
+              h("span", {}, [e.items ? ((e.codes || e.items).join(", ") || "Whole tool") : "",
                              e.kind === "custom" ? e.remarks || "Custom entry" : plural(e.ranges, "range"), e.by, e.cal_id].filter(Boolean).join(" · "))),
             h("span", { class: `result ${e.result}` }, e.result)))
         : h("p", { class: "empty" }, "Not calibrated yet"))];
@@ -799,7 +805,7 @@
       h("header", { class: "bar" },
         backButton(itemHash("tool", tool)),
         h("div", { class: "tool-head" },
-          h("div", { class: "bar-row" }, h("h1", {}, item.name), h("span", { class: "badge" }, tool.status)),
+          h("div", { class: "bar-row" }, h("h1", {}, itemLabel(item)), h("span", { class: "badge" }, tool.status)),
           h("p", {}, `${tool.tool_id} · ${tool.name}`))),
       h("main", { class: canDo && !state.expired ? "body with-actions" : "body" },
         message,
@@ -814,7 +820,7 @@
           fact("Item of", `${tool.tool_id} · ${tool.name}`), fact("Interval", item.interval),
           fact(tool.deviation_label || "Calibration Tolerance", tool.deviation),
           fact("Last calibrated", Dates.display(item.last_date))),
-        rangesCard(tool.ranges.filter(r => r.item === item.id), () => item.name),
+        rangesCard(tool.ranges.filter(r => r.item === item.id), () => itemLabel(item)),
         historyCard(tool.history.filter(e => !e.items || !e.items.length || e.items.includes(item.name)))),
       !canDo || state.expired ? null : h("div", { class: "actions" },
         h("button", { class: "btn secondary", onclick: () => go(itemHash("custom", tool, item)) }, "Custom Entry"),
@@ -1079,7 +1085,7 @@
     const sections = byItem ? dues.map(d => {
       const blank = h("p", { class: "small" });
       return { ...d, blank, cards: cards.filter(c => c.row.item_id === d.unit.id),
-               head: h("section", { class: "item-head" }, h("div", { class: "item-title" }, h("b", {}, d.unit.name),
+               head: h("section", { class: "item-head" }, h("div", { class: "item-title" }, h("b", {}, itemLabel(d.unit)),
                  d.interval ? h("span", { class: "small" }, `every ${d.interval}`) : null), d.field.field, blank) };
     }) : [];
     const sectionBlank = sec => !sec.cards.some(c => c.touched());
@@ -1169,7 +1175,8 @@
     }
 
     startForm();
-    const what = byItem ? `Whole tool · ${plural(units.length, "item")}` : units[0] ? units[0].name : tool.name;
+    const what = byItem ? `${units.length === (tool.items || []).length ? "Whole tool" : "Items"} · ${plural(units.length, "item")}`
+      : units[0] ? itemLabel(units[0]) : tool.name;
     show(h("div", { class: "screen" },
       formHeader(`${entry ? "Change" : "Calibrate"} ${tool.tool_id}`, [what, tool.deviation].filter(Boolean).join(" · ")),
       h("main", { class: "body with-actions", oninput: () => { state.formDirty = true; showBlank(); }, onclick: e => {
@@ -1193,7 +1200,7 @@
     const wholeOk = tool.items && sent.length === tool.items.length;
     const forItem = tool.items ? h("select", {},
       (wholeOk ? [h("option", { value: "" }, "Whole tool (every item)")] : []).concat(sent.map(i => h("option", {
-        value: String(i.id), selected: String(i.id) === String(entry ? entry.item_id : itemId) }, i.name)))) : null;
+        value: String(i.id), selected: String(i.id) === String(entry ? entry.item_id : itemId) }, itemLabel(i))))) : null;
     const statuses = state.data.statuses || STATUSES;
     const note = h("textarea", { rows: "4" });
     note.value = entry ? entry.note : "";
@@ -1279,7 +1286,7 @@
           ? h("section", { class: "card note-text" }, entry.note)
           : h("section", { class: "card" }, entry.ranges.map(r => h("div", { class: "line" },
               h("span", { class: "line-main" },
-                h("span", {}, [tool && r.item_id ? (itemOf(tool, r.item_id) || { name: "" }).name : "", r.range, r.standard].filter(Boolean).join(" · ")),
+                h("span", {}, [tool && r.item_id && itemOf(tool, r.item_id) ? itemLabel(itemOf(tool, r.item_id)) : "", r.range, r.standard].filter(Boolean).join(" · ")),
                 h("span", {}, `As Found ${r.as_found || "–"} · As Left ${r.after_adj || "–"}${r.remarks ? ` · ${r.remarks}` : ""}`)),
               h("span", { class: `result ${r.result === "fail" ? "Fail" : "Pass"}` }, r.result === "fail" ? "Fail" : "Pass")))))));
   }
