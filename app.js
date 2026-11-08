@@ -19,7 +19,7 @@
   const STORE_WORK = "calcheck.work";        // the entries made here (locked)
   const STORE_WORK_INFO = "calcheck.workInfo";   // just {session, total, unsent}: readable before the PIN
   const FREE_TRIES = 5, WAIT_SECONDS = 60;
-  const APP_VERSION = "a30";                  // (shown on the login screen; the same as VERSION in sw.js)
+  const APP_VERSION = "a31";                  // (shown on the login screen; the same as VERSION in sw.js)
   const STATUSES = ["In Service", "Reference Only", "Damaged", "Removed from Service"];
 
   const app = document.getElementById("app");
@@ -822,18 +822,35 @@
   }
 
   // Calibrate a split tool: which item - or the whole tool, every item sent here, together
+  // Several ticked (those due, to start): done together, under one Calibration ID, as on the desktop
   function pickScreen(original) {
     const tool = current(original);
     const items = sentItems(tool);
+    const ticks = items.map(i => h("input", { type: "checkbox", "aria-label": `Do ${i.name} together with others` }));
+    items.forEach((i, n) => { ticks[n].checked = ["red", "yellow"].includes(Dates.severity(i.due_date, rules())); });
+    const together = h("button", { class: "btn wide secondary", onclick: () => {
+      const chosen = items.filter((i, n) => ticks[n].checked);
+      if (chosen.length) go(`${itemHash("cal", tool)}/item/${chosen.length === items.length ? "all" : chosen.map(i => i.id).join(",")}`);
+    } });
+    function showCount() {
+      const count = ticks.filter(t => t.checked).length;
+      together.textContent = count === 1 ? "Calibrate the Ticked Item" : `Calibrate the ${count || ""} Ticked Items Together`.replace("  ", " ");
+      together.disabled = !count;
+    }
+    ticks.forEach(t => t.addEventListener("change", showCount));
+    showCount();
     show(h("div", { class: "screen" },
       formHeader(`Calibrate ${tool.tool_id}`, "Which item?"),
       h("main", { class: "list" },
-        // (each item's row: straight to calibrating it)
-        items.map(i => itemRow(tool, i, [i.done ? h("b", { class: "done-mark" }, "Done") : null,
-                                         i.due_date ? `Due ${Dates.display(i.due_date)}` : "No due date"],
-                               itemHash("cal", tool, i))),
-        items.length > 1 ? h("button", { class: "btn wide", onclick: () => go(itemHash("cal", tool, "all")) },
-          `Whole tool · ${plural(items.length, "item")}`) : null)));
+        // (each item's row: straight to calibrating it; its tick: to do it with others)
+        items.map((i, n) => h("div", { class: "pick-line" }, h("label", { class: "tick" }, ticks[n]),
+          itemRow(tool, i, [i.done ? h("b", { class: "done-mark" }, "Done") : null,
+                            i.due_date ? `Due ${Dates.display(i.due_date)}` : "No due date"], itemHash("cal", tool, i)))),
+        // (one item: its row; the whole tool; or the ticked ones together - each under one Calibration ID)
+        items.length > 1 ? [h("button", { class: "btn wide", onclick: () => go(itemHash("cal", tool, "all")) },
+                              `Whole Tool · ${plural(items.length, "item")}`),
+                            h("p", { class: "small center" }, "Or tick the items to do together: one Calibration ID, each item its own due date"),
+                            together] : null)));
   }
 
   // Calibrate - or, once this device has a calibration for the tool, a green
@@ -1616,7 +1633,8 @@
       const [id, unit] = part("#/cal/");
       const t = tool(id);
       if (!t.items) return calibrateScreen(t, null, null);
-      const units = unit === "all" ? sentItems(t).map(i => i.id) : sentItems(t).filter(i => String(i.id) === unit).map(i => i.id);
+      // (all, one, or several ticked: "3,5")
+      const units = unit === "all" ? sentItems(t).map(i => i.id) : sentItems(t).filter(i => unit.split(",").includes(String(i.id))).map(i => i.id);
       if (!units.length) return go(itemHash("pick", t));       // (a split tool: which item first)
       return calibrateScreen(t, null, units);
     }

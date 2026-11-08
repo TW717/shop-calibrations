@@ -360,3 +360,10 @@ h1, h2, p { margin: 0; }
 .scanner .photo-hint { margin: 0; font-size: 14px; color: #fff; text-shadow: 0 1px 3px rgba(0, 0, 0, .6); }
 .scanner .photo-hint[hidden] { display: none; }
 .scanner .found { z-index: 2; }
+
+/* Calibrate a split tool: a tick by each item, to do several together */
+.pick-line { display: flex; align-items: center; gap: 10px; }
+.pick-line .row { flex-grow: 1; min-width: 0; }
+.pick-line .tick { display: flex; align-items: center; justify-content: center; width: 40px; height: 40px; flex-shrink: 0; }
+.pick-line .tick input { width: 24px; height: 24px; accent-color: var(--accent); }
+.btn.wide:disabled { opacity: .5; }
