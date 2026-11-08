@@ -351,3 +351,12 @@ h1, h2, p { margin: 0; }
 .item-head { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; padding-top: 14px; border-top: 2px solid var(--soft2); }
 .item-head:first-of-type { border-top: none; margin-top: 0; padding-top: 0; }
 .item-title { display: flex; align-items: baseline; gap: 8px; font-size: 17px; }
+
+/* Scan a Label: Take Photo (the phone's own camera app) at the foot of the picture */
+.scanner .photo-bar { position: absolute; left: 16px; right: 16px; bottom: calc(24px + env(safe-area-inset-bottom));
+                      display: flex; flex-direction: column; align-items: center; gap: 8px; }
+.scanner .photo-btn { display: inline-flex; align-items: center; gap: 8px; height: 48px; padding: 0 22px; border: none;
+                      border-radius: 999px; background: rgba(255, 255, 255, .92); color: #0b0f14; font-size: 16px; font-weight: 700; }
+.scanner .photo-hint { margin: 0; font-size: 14px; color: #fff; text-shadow: 0 1px 3px rgba(0, 0, 0, .6); }
+.scanner .photo-hint[hidden] { display: none; }
+.scanner .found { z-index: 2; }

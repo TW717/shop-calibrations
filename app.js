@@ -19,7 +19,7 @@
   const STORE_WORK = "calcheck.work";        // the entries made here (locked)
   const STORE_WORK_INFO = "calcheck.workInfo";   // just {session, total, unsent}: readable before the PIN
   const FREE_TRIES = 5, WAIT_SECONDS = 60;
-  const APP_VERSION = "a29";                  // (shown on the login screen; the same as VERSION in sw.js)
+  const APP_VERSION = "a30";                  // (shown on the login screen; the same as VERSION in sw.js)
   const STATUSES = ["In Service", "Reference Only", "Damaged", "Removed from Service"];
 
   const app = document.getElementById("app");
@@ -64,6 +64,8 @@
            "M8 9v6", "M11 9v6", "M14 9v6", "M17 9v6"],
     close: ["M6 6l12 12M18 6L6 18"],
     torch: ["M8 3h8l-1 6H9z", "M9 9h6v11a1 1 0 0 1-1 1h-4a1 1 0 0 1-1-1z", "M12 13v2"],
+    camera: ["M4 8h3l2-3h6l2 3h3a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1z",
+             "M12 10a3.5 3.5 0 1 0 0 7a3.5 3.5 0 1 0 0-7"],
   };
   function icon(name, size = 22) {
     const ns = "http://www.w3.org/2000/svg";
@@ -966,6 +968,7 @@
 
       function setResult(value) {
         row.result = value;
+        if (["pass", "fail"].includes(value)) found.classList.remove("needs");     // (named by Save: ticked now)
         remarks.value = Rules.remarksForResult(remarks.value, { pass: "Pass", fail: "Fail" }[value] || "");
         showResult();
         syncAsLeft();
@@ -1099,6 +1102,7 @@
       }
       if (unlocked && cards.some(c => !c.rangeIn.value.trim())) return formError(errors, "Range can't be left blank.");
       const undecided = saving.filter(c => !["pass", "fail"].includes(c.row.result));
+      for (const c of saving) c.found.classList.toggle("needs", undecided.includes(c) && !c.found.classList.contains("out"));
       if (undecided.length && byItem)
         return formError(errors, `Every range of an item being calibrated needs Pass or Fail – or leave the whole item blank to skip it: ${
           undecided.map(c => `${itemOf(tool, c.row.item_id).name} ${c.rangeIn.value.trim()}`).join(", ")}`);
@@ -1366,21 +1370,34 @@
     const result = h("div", { role: "status" });
     const torch = h("button", { class: "round", "aria-label": "Light", hidden: "" }, icon("torch"));
     const zoomButton = h("button", { class: "round zoom", "aria-label": "Zoom", hidden: "" }, "2×");
+    const lensButton = h("button", { class: "round zoom", "aria-label": "Lens", hidden: "" }, "1");
     const guide = h("div", { class: "guide" }, h("i"), h("i"), h("i"), h("i"));
+    // Take Photo: the phone's own camera app (its own focus, lens and sharpening, on every
+    // phone), and the label read from the photo - when the live picture won't read
+    const photoInput = h("input", { type: "file", accept: "image/*", capture: "environment", hidden: "" });
+    const photoButton = h("button", { class: "photo-btn", onclick: () => { pauseCamera(); photoInput.click(); } },
+      icon("camera", 20), "Take Photo");
+    const photoHint = h("p", { class: "photo-hint", hidden: "" }, "Hard to read? Take a photo instead");
     show(h("div", { class: "scanner" },
       h("div", { class: "view" }, video, guide,
         h("div", { class: "top" },
           h("button", { class: "round", "aria-label": "Close", onclick: () => history.length > 1 ? history.back() : go("#/due") },
             icon("close")),
-          h("h1", {}, "Scan a Label"), zoomButton, torch),
-        hint, result)));
+          h("h1", {}, "Scan a Label"), lensButton, zoomButton, torch),
+        hint, h("div", { class: "photo-bar" }, photoHint, photoButton, photoInput), result)));
 
-    let stream = null, timer = null, stopped = false, lit = false;
+    let stream = null, timer = null, stopped = false, lit = false, tries = 0;
     const camera = { stop() {
       stopped = true;
       clearTimeout(timer);
       if (stream) stream.getTracks().forEach(t => t.stop());
     } };
+    // (the live picture off while the phone's camera app takes the photo: some phones allow only one)
+    function pauseCamera() {
+      clearTimeout(timer);
+      if (stream) stream.getTracks().forEach(t => t.stop());
+      stream = null;
+    }
     state.camera = camera;
     const picture = document.createElement("canvas");
     const MOST = 900;                           // (pixels across, at most, of the part read)
@@ -1410,11 +1427,42 @@
         try { text = await Scan.read(picture); } catch (e) {
           hint.textContent = e.message;
         }
-        if (stopped) return;
+        if (stopped || !stream) return;
         if (text) return found(text.trim());
+        if (++tries === 40) photoHint.hidden = false;      // (several seconds without a read)
       }
-      timer = setTimeout(look, 120);
+      if (stream) timer = setTimeout(look, 120);
     }
+
+    // (no photo taken: the live picture back)
+    photoInput.addEventListener("cancel", () => { if (!stream) startCamera(chosenLens()).catch(() => {}); });
+    // A photo from the phone's camera app: the code is where it was aimed, near the middle - read
+    // from squares round the middle, tightest first (the code biggest in them), then the whole photo
+    photoInput.addEventListener("change", async () => {
+      const file = photoInput.files[0];
+      photoInput.value = "";
+      if (!file) return startCamera(chosenLens());
+      hint.textContent = "Reading the photo...";
+      let text = null;
+      try {
+        const image = await createImageBitmap(file);
+        const short = Math.min(image.width, image.height);
+        for (const part of [0.2, 0.3, 0.45, 0.65, 1]) {
+          const w = part === 1 ? image.width : short * part, ht = part === 1 ? image.height : short * part;
+          const scale = Math.min(1, 1200 / Math.max(w, ht));
+          picture.width = Math.round(w * scale);
+          picture.height = Math.round(ht * scale);
+          picture.getContext("2d", { willReadFrequently: true })
+            .drawImage(image, (image.width - w) / 2, (image.height - ht) / 2, w, ht, 0, 0, picture.width, picture.height);
+          text = await Scan.read(picture);
+          if (text) break;
+        }
+      } catch (e) { /* (not a picture it can open) */ }
+      if (stopped) return;
+      if (text) return found(text.trim());
+      hint.textContent = "Couldn't read the code in that photo. Take it again, a little closer and square on.";
+      startCamera(chosenLens());
+    });
 
     function found(text) {
       const id = text.toLowerCase();
@@ -1430,9 +1478,23 @@
         h("span", { class: "warn", "aria-hidden": "true" }, "!"),
         h("span", { class: "msg" }, h("b", {}, `${text.slice(0, 30)} isn't in this file`),
           h("span", {}, "Ask for it to be sent to your phone")),
-        h("button", { onclick: () => { result.replaceChildren(); look(); } }, "Scan Again")));
+        h("button", { onclick: () => { result.replaceChildren(); stream ? look() : startCamera(chosenLens()); } }, "Scan Again")));
     }
 
+    // The phone's back lenses: the main one first. Phones name them their own way
+    // (Android's "camera2 0, facing back", iPhone's "Back Camera"); left to itself
+    // a browser often takes an ultra-wide one, soft at one side up close
+    let lenses = [];
+    function backLenses(devices) {
+      const back = devices.filter(d => d.kind === "videoinput" && !/front|user|selfie/i.test(d.label));
+      const special = d => /ultra|wide angle|tele|depth|macro|dual|triple/i.test(d.label);
+      const number = d => { const m = /camera2? ?(\d+)/i.exec(d.label); return m ? +m[1] : 99; };
+      return [...back.filter(d => !special(d)).sort((a, b) => number(a) - number(b)), ...back.filter(special)];
+    }
+    function chosenLens() {
+      const kept = load("scanLens");
+      return lenses.find(d => d.deviceId === kept) ? kept : lenses.length ? lenses[0].deviceId : null;
+    }
     torch.onclick = async () => {
       const track = stream && stream.getVideoTracks()[0];
       try {
@@ -1444,21 +1506,67 @@
 
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
       hint.textContent = cameraTrouble(null);
+      photoHint.hidden = false;
       return;
     }
-    navigator.mediaDevices.getUserMedia({ audio: false,
-      video: { facingMode: { ideal: "environment" }, width: { ideal: 1920 }, height: { ideal: 1080 } } })
-      .then(got => {
+
+    // Tap the picture: focus there (where the phone lets the app), then back to focusing all the time
+    video.addEventListener("click", e => {
+      const track = stream && stream.getVideoTracks()[0];
+      const can = track && track.getCapabilities ? track.getCapabilities() : {};
+      if (!track || !can.focusMode) return;
+      const box = video.getBoundingClientRect();
+      const point = { x: (e.clientX - box.left) / box.width, y: (e.clientY - box.top) / box.height };
+      track.applyConstraints({ advanced: [{ focusMode: can.focusMode.includes("single-shot") ? "single-shot" : "continuous",
+                                            pointsOfInterest: [point] }] }).catch(() => {});
+      setTimeout(() => track.readyState === "live" && can.focusMode.includes("continuous") &&
+        track.applyConstraints({ advanced: [{ focusMode: "continuous" }] }).catch(() => {}), 1500);
+    });
+
+    // A lens (or, the first time, whichever the browser gives - then the main back lens, once the
+    // phone has said which lenses it has); at the most detail it has, up to 4K
+    function startCamera(deviceId) {
+      if (stopped) return Promise.resolve();
+      if (stream) stream.getTracks().forEach(t => t.stop());
+      return navigator.mediaDevices.getUserMedia({ audio: false, video: {
+        ...(deviceId ? { deviceId: { exact: deviceId } } : { facingMode: { ideal: "environment" } }),
+        width: { ideal: 3840 }, height: { ideal: 2160 } } }).then(got => running(got, deviceId));
+    }
+    lensButton.onclick = () => {
+      const at = lenses.findIndex(d => d.deviceId === chosenLens());
+      const next = lenses[(at + 1) % lenses.length];
+      save("scanLens", next.deviceId);
+      startCamera(next.deviceId).catch(err => { hint.textContent = cameraTrouble(err); });
+    };
+
+    startCamera(null)
+      .then(() => navigator.mediaDevices.enumerateDevices())
+      .then(devices => {
+        lenses = backLenses(devices);
+        lensButton.hidden = lenses.length < 2;
+        const best = chosenLens();
+        const now = stream && stream.getVideoTracks()[0] && stream.getVideoTracks()[0].getSettings().deviceId;
+        if (best && best !== now) return startCamera(best);       // (the main back lens, not the browser's pick)
+      })
+      .catch(err => { hint.textContent = cameraTrouble(err); photoHint.hidden = false; });
+
+    function running(got, deviceId) {
         if (stopped) { got.getTracks().forEach(t => t.stop()); return; }
         stream = got;
         video.srcObject = got;
         video.play().catch(() => {});
         const track = got.getVideoTracks()[0];
         const can = track && track.getCapabilities ? track.getCapabilities() : {};
+        lensButton.textContent = String(Math.max(1, lenses.findIndex(d => d.deviceId === deviceId) + 1));
         torch.hidden = !can.torch;              // (a light where the phone lets the app use it: not on iPhones)
-        // Focusing all the time, and zoomed in 2x (1x / 2x / 3x on the button) - where the phone lets it
+        lit = false;
+        torch.classList.remove("on");
+        // Focusing all the time, on the middle (the guide), and zoomed in 2x (1x / 2x / 3x on the
+        // button) - where the phone lets it
         if (track && can.focusMode && can.focusMode.includes("continuous"))
           track.applyConstraints({ advanced: [{ focusMode: "continuous" }] }).catch(() => {});
+        if (track && "pointsOfInterest" in (track.getSettings ? track.getSettings() : {}))
+          track.applyConstraints({ advanced: [{ pointsOfInterest: [{ x: 0.5, y: 0.5 }] }] }).catch(() => {});
         if (track && can.zoom && can.zoom.max >= 1.5) {
           const zooms = [1, 2, 3].filter(z => z >= can.zoom.min && z <= can.zoom.max);
           let at = zooms.includes(2) ? 2 : zooms[zooms.length - 1];
@@ -1469,9 +1577,9 @@
           setZoom(at);
         }
         Scan.loadZxing().catch(() => {});       // (ready before it's needed, where there's no reader of the phone's own)
+        clearTimeout(timer);
         look();
-      })
-      .catch(err => { hint.textContent = cameraTrouble(err); });
+    }
   }
 
   function route() {
