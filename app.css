@@ -341,3 +341,13 @@ h1, h2, p { margin: 0; }
                         color: var(--due-yellow-text, #8a6500); display: flex; align-items: center; justify-content: center; font-weight: 800; }
 .scanner .found button { flex-shrink: 0; white-space: nowrap; border: none; background: var(--pale); color: var(--link-strong);
                          font-weight: 700; border-radius: 10px; padding: 0 14px; height: 40px; }
+
+/* A tool split into items (GMS001's blocks): each item under its tool, narrower, so it reads as part of it */
+.row.sub { width: 75%; margin-left: 25%; min-height: 52px; padding: 10px 12px; }
+.row.sub .row-id { font-size: 15px; }
+.line.item-heading { font-size: 13px; font-weight: 700; color: var(--muted); background: var(--soft); padding: 8px 14px; }
+.item-line .row-id { display: flex; align-items: center; gap: 6px; }
+/* Calibrate the whole tool: each item's heading, with its own Next due, above its ranges */
+.item-head { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; padding-top: 14px; border-top: 2px solid var(--soft2); }
+.item-head:first-of-type { border-top: none; margin-top: 0; padding-top: 0; }
+.item-title { display: flex; align-items: baseline; gap: 8px; font-size: 17px; }

@@ -19,7 +19,7 @@
   const STORE_WORK = "calcheck.work";        // the entries made here (locked)
   const STORE_WORK_INFO = "calcheck.workInfo";   // just {session, total, unsent}: readable before the PIN
   const FREE_TRIES = 5, WAIT_SECONDS = 60;
-  const APP_VERSION = "a28";                  // (shown on the login screen; the same as VERSION in sw.js)
+  const APP_VERSION = "a29";                  // (shown on the login screen; the same as VERSION in sw.js)
   const STATUSES = ["In Service", "Reference Only", "Damaged", "Removed from Service"];
 
   const app = document.getElementById("app");
@@ -151,19 +151,69 @@
   }
 
   // A tool as it stands with this device's entries: the newest entry decides
-  // its due date (as on the desktop), a custom entry can change its status
+  // its due date (as on the desktop), a custom entry can change its status.
+  // A tool split into items: each item's own (currentItem); the tool is as due
+  // as its soonest item sent here (any item, for one only to look up)
   function current(tool) {
     const mine = entriesFor(tool.tool_id);
     const latest = mine.find(e => !tool.last_date || e.date >= tool.last_date);
     const statusEntry = state.work.entries.filter(e => e.tool_id === tool.tool_id && e.kind === "custom")
       .sort((a, b) => b.saved_at.localeCompare(a.saved_at))[0];
-    return {
+    const now = {
       ...tool,
       due_date: latest ? latest.due_date : tool.due_date,
       last_date: latest ? latest.date : tool.last_date,
       status: statusEntry ? statusEntry.status : tool.status,
       done: mine.length > 0,
     };
+    if (tool.items) {
+      now.items = tool.items.map(i => currentItem(tool, i));
+      const counted = now.items.some(i => i.sent) ? now.items.filter(i => i.sent) : now.items;
+      const dated = counted.filter(i => i.due_date).sort((a, b) => a.due_date.localeCompare(b.due_date));
+      now.due_date = dated.length ? dated[0].due_date : "";
+    }
+    return now;
+  }
+
+  // ---------- tools split into items (GMS001's blocks) ----------
+  // Each item has its own ranges, due date and calibrations; those sent here
+  // ("sent") can be calibrated, one at a time or the whole tool together
+  function sentItems(tool) {
+    return (tool.items || []).filter(i => i.sent);
+  }
+
+  function itemOf(tool, id) {
+    return (tool.items || []).find(i => String(i.id) === String(id));
+  }
+
+  // Whether an entry is for an item: a calibration with a range of it, a custom
+  // entry for it - or for the whole tool (no item)
+  function entryCovers(e, itemId) {
+    return e.kind === "custom" ? !e.item_id || e.item_id === itemId : e.ranges.some(r => r.item_id === itemId);
+  }
+
+  function currentItem(tool, item) {
+    const mine = entriesFor(tool.tool_id).filter(e => entryCovers(e, item.id));
+    const latest = mine.find(e => !item.last_date || e.date >= item.last_date);
+    const range = latest && latest.kind === "measurement" ? latest.ranges.find(r => r.item_id === item.id) : null;
+    return {
+      ...item,
+      due_date: !latest ? item.due_date : range ? range.due_date || "" : latest.due_date,
+      last_date: latest ? latest.date : item.last_date,
+      done: mine.some(e => e.kind === "measurement"),
+    };
+  }
+
+  // The items an entry is for, by name ("" for the whole tool / a tool not split)
+  function entryItemNames(e) {
+    const tool = state.data.tools.find(t => t.tool_id === e.tool_id);
+    if (!tool || !tool.items) return "";
+    if (e.kind === "custom") return e.item_id ? (itemOf(tool, e.item_id) || { name: "" }).name : "Whole tool";
+    return [...new Set(e.ranges.map(r => (itemOf(tool, r.item_id) || { name: "" }).name))].filter(Boolean).join(", ");
+  }
+
+  function itemHash(prefix, tool, item) {
+    return `#/${prefix}/${encodeURIComponent(tool.tool_id)}${item ? `/item/${item === "all" ? "all" : item.id}` : ""}`;
   }
 
   function canChange(entry) {
@@ -485,6 +535,18 @@
       h("span", { class: "chev" }, icon("chev", 16)));
   }
 
+  // An item of a split tool, under its tool's row (narrower, so it reads as part of it)
+  // (to: where a tap goes - the item's page, unless said; to also makes it full width: a list of items alone)
+  function itemRow(tool, item, side, to) {
+    const sev = Dates.severity(item.due_date, rules());
+    return h("button", { class: to ? "row item-pick" : "row sub", onclick: () => go(to || itemHash("tool", tool, item)) },
+      h("span", { class: `dot ${sev}`, "aria-label": sev === "none" ? "No due date" : `${sev} dot` }),
+      h("span", { class: "row-main" }, h("span", { class: "row-id" }, item.name),
+        h("span", { class: "row-name" }, item.interval ? `Every ${item.interval}` : tool.tool_id)),
+      h("span", { class: "row-side" }, side),
+      h("span", { class: "chev" }, icon("chev", 16)));
+  }
+
   function sessionStrip() {
     const entries = state.work.entries;
     const unsent = entries.filter(e => !e.sent_at).length;
@@ -527,16 +589,19 @@
       .filter(t => ["red", "yellow"].includes(Dates.severity(t.due_date, rules())))
       .sort((a, b) => a.due_date.localeCompare(b.due_date));
 
+    // (a split tool: its items sent here that are due, each under it)
+    const dueItems = t => sentItems(t).filter(i => ["red", "yellow"].includes(Dates.severity(i.due_date, rules())));
+    const when = due => [h("b", { class: Dates.severity(due, rules()) }, Dates.whenText(due)), `Due ${Dates.display(due)}`];
+
     function fill() {
       const shown = due.filter(matches);
-      const count = sev => shown.filter(t => Dates.severity(t.due_date, rules()) === sev).length;
+      const units = shown.flatMap(t => t.items ? dueItems(t) : [t]);         // (each item counts)
+      const count = sev => units.filter(u => Dates.severity(u.due_date, rules()) === sev).length;
       chips.replaceChildren(
         h("span", { class: "chip red" }, Dates.overdueCountText(count("red"), rules())),
         h("span", { class: "chip yellow" }, Dates.dueSoonCountText(count("yellow"), rules())));
-      list.replaceChildren(...shown.map(t => {
-        const sev = Dates.severity(t.due_date, rules());
-        return toolRow(t, [h("b", { class: sev }, Dates.whenText(t.due_date)), `Due ${Dates.display(t.due_date)}`]);
-      }));
+      list.replaceChildren(...shown.flatMap(t => [toolRow(t, when(t.due_date)),
+                                                  ...(t.items ? dueItems(t).map(i => itemRow(t, i, when(i.due_date))) : [])]));
       if (!shown.length) list.append(h("p", { class: "empty" }, state.search ? "No tools match your search" : "Nothing in this file is due or overdue"));
     }
     fill();
@@ -566,8 +631,11 @@
           .sort((a, b) => a.tool_id.localeCompare(b.tool_id, undefined, { numeric: true }));
         if (!shown.length) continue;
         list.append(h("h2", { class: "group" }, `${c || "No category"} · ${shown.length}`),
-                    ...shown.map(t => toolRow(t, t.viewOnly ? [h("span", { class: "view-mark" }, "View only"), t.status]
-                                                            : [t.done ? h("b", { class: "done-mark" }, "Done") : null, t.status])));
+                    ...shown.flatMap(t => [toolRow(t, t.viewOnly ? [h("span", { class: "view-mark" }, "View only"), t.status]
+                                                                 : [t.done ? h("b", { class: "done-mark" }, "Done") : null, t.status]),
+                      // (a split tool sent here: its items sent, under it)
+                      ...(t.viewOnly ? [] : sentItems(t).map(i => itemRow(t, i, [i.done ? h("b", { class: "done-mark" }, "Done") : null,
+                                                                                 i.due_date ? `Due ${Dates.display(i.due_date)}` : "No due date"])))]));
       }
       if (!list.children.length) list.append(h("p", { class: "empty" }, "No tools match your search"));
     }
@@ -589,12 +657,13 @@
   function entryLine(e, { withTool = false } = {}) {
     const tool = state.data.tools.find(t => t.tool_id === e.tool_id) || { name: "" };
     const result = entryResult(e);
-    const what = e.kind === "custom" ? e.note.split("\n")[0] : plural(e.ranges.length, "range");
+    const items = entryItemNames(e);            // (a split tool: which items)
+    const what = [items, e.kind === "custom" ? e.note.split("\n")[0] : plural(e.ranges.length, "range")].filter(Boolean).join(" · ");
     return h("button", { class: "entry-row", onclick: () => go(`#/entry/${e.id}`) },
       h("span", { class: "entry-top" },
         h("span", { class: "row-id" }, withTool ? e.tool_id : Dates.display(e.date)),
         h("span", { class: `result ${result}` }, result)),
-      h("span", { class: "row-name" }, withTool ? (e.kind === "custom" ? `${tool.name} – ${what}` : tool.name) : what),
+      h("span", { class: "row-name" }, withTool ? (e.kind === "custom" || items ? `${tool.name} – ${what}` : tool.name) : what),
       h("span", { class: "small" },
         [withTool ? Dates.display(e.date) : null, `${e.by_name} at ${timeText(e.saved_at)}`].filter(Boolean).join(" · "),
         e.sent_at ? h("span", { class: "tag sent" }, "Sent") : h("span", { class: "tag unsent" }, "Not sent")));
@@ -636,15 +705,19 @@
     return (state.data.view_tools || []).find(t => t.tool_id === toolId);
   }
 
-  function toolScreen(toolId) {
+  function toolScreen(toolId, itemId) {
     const original = state.data.tools.find(t => t.tool_id === toolId) || viewTool(toolId);
     if (!original) { go("#/due"); return; }
     const viewOnly = !state.data.tools.includes(original);
     const tool = current(original);
+    const item = itemId !== null && itemId !== undefined ? itemOf(tool, itemId) : null;
+    if (itemId && !item) { go(itemHash("tool", tool)); return; }
+    if (item) return itemScreen(tool, item, viewOnly);
     const sev = Dates.severity(tool.due_date, rules());
     const fact = (label, value) => value ? h("div", { class: "fact" }, h("span", {}, label), h("span", {}, value)) : null;
     const mine = entriesFor(toolId);
     const message = h("div", { role: "alert" });
+    const itemName = id => (itemOf(tool, id) || { name: "" }).name;
 
     show(h("div", { class: "screen" },
       h("header", { class: "bar" },
@@ -671,39 +744,114 @@
             fact("Environment", tool.parameter)],
           fact("Category", tool.category),
           fact("Last calibrated", Dates.display(tool.last_date))),
-        h("h2", {}, "Ranges"),
-        h("section", { class: "card" }, tool.ranges.length
-          ? tool.ranges.map((r, i) => h("div", { class: "line" },
-              h("span", { class: "line-main" }, h("span", {}, r.range || `Range ${i + 1}`), h("span", {}, r.standard ? `Standard: ${r.shown || r.standard}` : "No standard set"))))
-          : h("p", { class: "empty" }, "No ranges set up for this tool")),
-        h("h2", {}, "Calibration history"),
-        h("section", { class: "card" }, tool.history.length
-          ? tool.history.map(e => h("div", { class: "line" },
-              h("span", { class: "line-main" },
-                h("span", {}, Dates.display(e.date)),
-                h("span", {}, [e.kind === "custom" ? e.remarks || "Custom entry" : plural(e.ranges, "range"), e.by, e.cal_id].filter(Boolean).join(" · "))),
-              h("span", { class: `result ${e.result}` }, e.result)))
-          : h("p", { class: "empty" }, "Not calibrated yet"))),
+        // (a split tool: its items, each with its own due date - tap one for its page)
+        tool.items ? [h("h2", {}, `Items · ${tool.items.length}`), h("section", { class: "card entries" }, tool.items.map(i => {
+          const isev = Dates.severity(i.due_date, rules());
+          return h("button", { class: "entry-row item-line", onclick: () => go(itemHash("tool", tool, i)) },
+            h("span", { class: "entry-top" }, h("span", { class: "row-id" }, h("span", { class: `dot ${isev}` }), " ", i.name),
+              h("span", { class: "small" }, viewOnly || i.sent ? (i.done ? "Done" : "") : "Not sent to you")),
+            h("span", { class: "row-name" }, [i.due_date ? `Due ${Dates.display(i.due_date)}` : "No due date",
+                                              i.interval ? `every ${i.interval}` : ""].filter(Boolean).join(" · ")));
+        }))] : null,
+        rangesCard(tool.ranges, itemName),
+        historyCard(tool.history)),
       state.expired || viewOnly ? null : h("div", { class: "actions" },
         h("button", { class: "btn secondary", onclick: () => go(`#/custom/${encodeURIComponent(toolId)}`) }, "Custom Entry"),
         calibrateAction(tool, mine, message))));
   }
 
+  // A tool's ranges (a split tool's: under each item's name) and its last calibrations
+  function rangesCard(ranges, itemName) {
+    let last = null;
+    return [h("h2", {}, "Ranges"),
+      h("section", { class: "card" }, ranges.length
+        ? ranges.flatMap((r, i) => {
+            const heading = r.item !== undefined && r.item !== last ? h("div", { class: "line item-heading" }, itemName(r.item)) : null;
+            last = r.item;
+            return [heading, h("div", { class: "line" },
+              h("span", { class: "line-main" }, h("span", {}, r.range || `Range ${i + 1}`), h("span", {}, r.standard ? `Standard: ${r.shown || r.standard}` : "No standard set")))];
+          })
+        : h("p", { class: "empty" }, "No ranges set up for this tool"))];
+  }
+
+  function historyCard(history) {
+    return [h("h2", {}, "Calibration history"),
+      h("section", { class: "card" }, history.length
+        ? history.map(e => h("div", { class: "line" },
+            h("span", { class: "line-main" },
+              h("span", {}, Dates.display(e.date)),
+              h("span", {}, [e.items ? (e.items.join(", ") || "Whole tool") : "",
+                             e.kind === "custom" ? e.remarks || "Custom entry" : plural(e.ranges, "range"), e.by, e.cal_id].filter(Boolean).join(" · "))),
+            h("span", { class: `result ${e.result}` }, e.result)))
+        : h("p", { class: "empty" }, "Not calibrated yet"))];
+  }
+
+  // An item of a split tool: its due date, ranges and calibrations; calibrated on its own
+  function itemScreen(tool, item, viewOnly) {
+    const sev = Dates.severity(item.due_date, rules());
+    const fact = (label, value) => value ? h("div", { class: "fact" }, h("span", {}, label), h("span", {}, value)) : null;
+    const mine = entriesFor(tool.tool_id).filter(e => entryCovers(e, item.id));
+    const message = h("div", { role: "alert" });
+    const canDo = !viewOnly && item.sent;
+    show(h("div", { class: "screen" },
+      h("header", { class: "bar" },
+        backButton(itemHash("tool", tool)),
+        h("div", { class: "tool-head" },
+          h("div", { class: "bar-row" }, h("h1", {}, item.name), h("span", { class: "badge" }, tool.status)),
+          h("p", {}, `${tool.tool_id} · ${tool.name}`))),
+      h("main", { class: canDo && !state.expired ? "body with-actions" : "body" },
+        message,
+        canDo ? null : h("div", { class: "note info" }, h("b", {}, "View only"),
+          viewOnly ? `Not sent to you to calibrate. As it was on ${Dates.display(state.data.created.slice(0, 10))}, when this file was made.`
+                   : `This item of ${tool.tool_id} wasn't sent to you to calibrate.`),
+        h("section", { class: `due-card ${sev}` }, h("span", { class: `dot ${sev}` }),
+          item.due_date ? h("span", {}, h("b", {}, `Due ${Dates.display(item.due_date)}`), ` · ${Dates.whenText(item.due_date).replace(/^Due /, "")}`)
+                        : h("span", {}, "No due date")),
+        mine.length ? [h("h2", {}, "On this device"), h("section", { class: "card entries" }, mine.map(e => entryLine(e)))] : null,
+        h("section", { class: "card facts" },
+          fact("Item of", `${tool.tool_id} · ${tool.name}`), fact("Interval", item.interval),
+          fact(tool.deviation_label || "Calibration Tolerance", tool.deviation),
+          fact("Last calibrated", Dates.display(item.last_date))),
+        rangesCard(tool.ranges.filter(r => r.item === item.id), () => item.name),
+        historyCard(tool.history.filter(e => !e.items || !e.items.length || e.items.includes(item.name)))),
+      !canDo || state.expired ? null : h("div", { class: "actions" },
+        h("button", { class: "btn secondary", onclick: () => go(itemHash("custom", tool, item)) }, "Custom Entry"),
+        calibrateAction(tool, mine, message, item))));
+  }
+
+  // Calibrate a split tool: which item - or the whole tool, every item sent here, together
+  function pickScreen(original) {
+    const tool = current(original);
+    const items = sentItems(tool);
+    show(h("div", { class: "screen" },
+      formHeader(`Calibrate ${tool.tool_id}`, "Which item?"),
+      h("main", { class: "list" },
+        // (each item's row: straight to calibrating it)
+        items.map(i => itemRow(tool, i, [i.done ? h("b", { class: "done-mark" }, "Done") : null,
+                                         i.due_date ? `Due ${Dates.display(i.due_date)}` : "No due date"],
+                               itemHash("cal", tool, i))),
+        items.length > 1 ? h("button", { class: "btn wide", onclick: () => go(itemHash("cal", tool, "all")) },
+          `Whole tool · ${plural(items.length, "item")}`) : null)));
+  }
+
   // Calibrate - or, once this device has a calibration for the tool, a green
   // "Calibration Complete" (so it isn't calibrated twice by mistake). From the
-  // All tab it can be done again, after a check.
-  function calibrateAction(tool, mine, message) {
-    const done = mine.find(e => e.kind === "measurement");
+  // All tab it can be done again, after a check. A split tool: which item
+  // (pickScreen); an item: its own
+  function calibrateAction(tool, mine, message, item) {
+    const done = tool.items && !item ? null : mine.find(e => e.kind === "measurement");
     if (done && state.tab !== "all")
       return h("div", { class: "complete", role: "status" }, "✓ Calibration Complete");
+    if (tool.items && !item)
+      return sentItems(tool).length ? h("button", { class: "btn", onclick: () => go(itemHash("pick", tool)) }, "Calibrate") : null;
     return h("button", { class: done ? "btn secondary" : "btn", onclick: () => {
-      if (!tool.ranges.length) {
+      if (!tool.ranges.filter(r => !item || r.item === item.id).length) {
         message.replaceChildren(h("div", { class: "note bad" }, "This tool has no ranges set up, so it can't be calibrated here. Use Custom Entry, or set up its ranges at the desktop."));
         return window.scrollTo(0, 0);
       }
-      if (done && !confirm(`${tool.tool_id} was already calibrated on this device (${done.by_name} at ${timeText(done.saved_at)}).\n\nCalibrate it again?`))
+      if (done && !confirm(`${item ? `${tool.tool_id} · ${item.name}` : tool.tool_id} was already calibrated on this device (${done.by_name} at ${timeText(done.saved_at)}).\n\nCalibrate it again?`))
         return;
-      go(`#/cal/${encodeURIComponent(tool.tool_id)}`);
+      go(itemHash("cal", tool, item));
     } }, done ? "Calibrate Again" : "Calibrate");
   }
 
@@ -758,26 +906,43 @@
     }
   }
 
-  function calibrateScreen(original, entry) {
+  // unitIds: a split tool's items being calibrated (one, or every item sent: the
+  // whole tool); null for a tool not split
+  function calibrateScreen(original, entry, unitIds) {
     const tool = current(original);
     const deviation = Rules.parseDeviation(tool.deviation);
+    if (entry && tool.items) unitIds = [...new Set(entry.ranges.map(r => r.item_id))];
+    const units = (unitIds || []).map(id => itemOf(tool, id)).filter(Boolean);
+    const byItem = units.length > 1;            // (each item under its heading, with its own Next due)
     const rows = entry ? entry.ranges.map(r => ({ ...r }))
-      : tool.ranges.map(r => ({ range: r.range, standard: r.standard, as_found: "", after_adj: "", result: "none",
-                                remarks: (r.remarks || tool.default_remarks || "").trim() }));
+      : tool.ranges.filter(r => !unitIds || unitIds.includes(r.item))
+          .sort((a, b) => units.findIndex(u => u.id === a.item) - units.findIndex(u => u.id === b.item))
+          .map(r => ({ range: r.range, standard: r.standard, as_found: "", after_adj: "", result: "none",
+                       remarks: (r.remarks || tool.default_remarks || "").trim(), ...(tool.items ? { item_id: r.item } : {}) }));
     const startDate = entry ? entry.date : Rules.today();
     const date = dateField("Date", startDate);
-    const due = dateField("Next due", entry ? entry.due_date : Rules.dueFromInterval(startDate, tool.interval),
-                          { optional: Rules.intervalIsNever(tool.interval) });
+    const intervalOf = unit => (unit && unit.interval) || tool.interval;
+    const savedDue = unit => entry ? ((entry.ranges.find(r => r.item_id === unit.id) || {}).due_date || entry.due_date) : null;
+    // The Next due date(s): the tool's (or its one item's), or each item's under its heading
+    const dues = (byItem ? units : [units[0] || null]).map(unit => {
+      const interval = intervalOf(unit);
+      const field = dateField("Next due", entry ? (unit ? savedDue(unit) : entry.due_date) : Rules.dueFromInterval(startDate, interval),
+                              { optional: Rules.intervalIsNever(interval) });
+      return { unit, interval, field, following: Rules.dueFromInterval(date.input.value, interval) || null };
+    });
+    const due = dues[0].field;
     const errors = h("div", { role: "alert" });
     let unlocked = false;
 
-    // The due date follows the date (date + the tool's interval) unless it's been changed by hand
-    let following = Rules.dueFromInterval(date.input.value, tool.interval) || null;
+    // A due date follows the date (date + the interval) unless it's been changed by hand
     date.input.addEventListener("input", () => {
-      if (!Rules.parseIso(date.input.value) || following === null) return;
-      if (due.input.value !== following) { following = null; return; }
-      following = Rules.dueFromInterval(date.input.value, tool.interval);
-      due.input.value = following;
+      if (!Rules.parseIso(date.input.value)) return;
+      for (const d of dues) {
+        if (d.following === null) continue;
+        if (d.field.input.value !== d.following) { d.following = null; continue; }
+        d.following = Rules.dueFromInterval(date.input.value, d.interval);
+        d.field.input.value = d.following;
+      }
     });
 
     const cards = rows.map((row, i) => {
@@ -887,8 +1052,21 @@
         outNote, shortNote,
         h("div", { class: "pair", role: "group", "aria-label": `Result for ${row.range || `range ${i + 1}`}` }, pass, fail),
         h("label", { class: "field" }, "Remarks", remarks));
-      return { row, card, rangeIn, stdIn, found, adj, remarks, saved, choose, asLeftMissing };
+      return { row, card, rangeIn, stdIn, found, adj, remarks, saved, choose, asLeftMissing,
+               touched: () => !!(found.value.trim() || adj.value.trim() || ["pass", "fail"].includes(row.result)) };
     });
+    // The whole tool: each item's heading above its ranges, with its Next due; one left blank isn't recorded
+    const sections = byItem ? dues.map(d => {
+      const blank = h("p", { class: "small" });
+      return { ...d, blank, cards: cards.filter(c => c.row.item_id === d.unit.id),
+               head: h("section", { class: "item-head" }, h("div", { class: "item-title" }, h("b", {}, d.unit.name),
+                 d.interval ? h("span", { class: "small" }, `every ${d.interval}`) : null), d.field.field, blank) };
+    }) : [];
+    const sectionBlank = sec => !sec.cards.some(c => c.touched());
+    function showBlank() {
+      for (const sec of sections) sec.blank.textContent = !entry && sectionBlank(sec) ? "Left blank: not recorded, its due date stays" : "";
+    }
+    showBlank();
 
     function unlockRanges() {
       unlocked = true;
@@ -898,7 +1076,10 @@
     }
     const editRanges = h("button", { type: "button", class: "btn secondary slim", onclick: unlockRanges }, "Edit Range / Standard");
     const allPass = cards.length > 1 ? h("button", { type: "button", class: "btn secondary slim", onclick: () => {
-      for (const c of cards) if (c.row.result !== "pass") c.choose("pass");
+      // (the whole tool: only the items started - one left blank stays skipped - unless nothing is yet)
+      const started = sections.filter(sec => !sectionBlank(sec)).flatMap(sec => sec.cards);
+      for (const c of (byItem && !entry && started.length ? started : cards)) if (c.row.result !== "pass") c.choose("pass");
+      showBlank();
     } }, "✓ All Pass") : null;
 
     async function saveCalibration() {
@@ -907,12 +1088,23 @@
         for (const [box, key] of [[c.found, "as_found"], [c.adj, "after_adj"]])
           if (box.value !== c.saved[key]) box.value = Rules.addInchMark(box.value, c.rangeIn.value);
       if (!Rules.parseIso(date.input.value)) return formError(errors, "Enter the date of the calibration.");
-      const never = Rules.intervalIsNever(tool.interval);
-      if (!(never && !due.input.value) && !Rules.parseIso(due.input.value)) return formError(errors, "Enter the next due date.");
+      // The whole tool: an item left blank isn't recorded (its due date stays)
+      const doing = byItem ? sections.filter(sec => entry || !sectionBlank(sec)) : dues;
+      if (byItem && !doing.length) return formError(errors, "Enter the readings for at least one item. An item left blank isn't recorded.");
+      const saving = byItem ? doing.flatMap(sec => sec.cards) : cards;
+      for (const d of doing) {
+        const never = Rules.intervalIsNever(d.interval);
+        if (!(never && !d.field.input.value) && !Rules.parseIso(d.field.input.value))
+          return formError(errors, d.unit && byItem ? `Enter the next due date for ${d.unit.name}.` : "Enter the next due date.");
+      }
       if (unlocked && cards.some(c => !c.rangeIn.value.trim())) return formError(errors, "Range can't be left blank.");
-      if (cards.some(c => !["pass", "fail"].includes(c.row.result))) return formError(errors, "Tick Pass or Fail for every range before saving.");
+      const undecided = saving.filter(c => !["pass", "fail"].includes(c.row.result));
+      if (undecided.length && byItem)
+        return formError(errors, `Every range of an item being calibrated needs Pass or Fail – or leave the whole item blank to skip it: ${
+          undecided.map(c => `${itemOf(tool, c.row.item_id).name} ${c.rangeIn.value.trim()}`).join(", ")}`);
+      if (undecided.length) return formError(errors, "Tick Pass or Fail for every range before saving.");
       // A failed range with no As Left: saved anyway only with a reason (it goes into that range's Remarks)
-      const missing = cards.filter(c => c.asLeftMissing());
+      const missing = saving.filter(c => c.asLeftMissing());
       if (missing.length) {
         const several = missing.length > 1;
         const reason = prompt(`Range ${missing.map(c => c.rangeIn.value.trim() || "?").join(", ")}: ` +
@@ -924,12 +1116,12 @@
           c.remarks.value = `${c.remarks.value.trim()}${c.remarks.value.trim() ? " - " : ""}As Left not recorded: ${reason.trim()}`;
       }
       // (a warning: a reading shorter than the range can be saved anyway)
-      const short = cards.flatMap(c => [[c.found, "As Found"], [c.adj, "As Left"]].map(([box, name]) => {
+      const short = saving.flatMap(c => [[c.found, "As Found"], [c.adj, "As Left"]].map(([box, name]) => {
         const n = box.value !== c.saved[box === c.found ? "as_found" : "after_adj"] && Rules.readingTooShort(c.rangeIn.value, box.value);
         return n ? `Range ${c.rangeIn.value.trim()}: ${name} – ${shortHint(c.rangeIn.value, n)}` : null;
       })).filter(Boolean);
       if (short.length && !confirm(`${short.join("\n")}\n\nSave anyway?`)) return;
-      const mismatches = cards.map(c => {
+      const mismatches = saving.map(c => {
         const [lead] = Rules.splitLeadingResult(c.remarks.value);
         return lead && lead !== c.row.result
           ? `${c.rangeIn.value.trim() || "This range"}: remarks say ${lead[0].toUpperCase() + lead.slice(1)} but ${c.row.result[0].toUpperCase() + c.row.result.slice(1)} is ticked`
@@ -937,11 +1129,14 @@
       }).filter(Boolean);
       if (mismatches.length && !confirm(`${mismatches.join("\n")}\n\nSave anyway?`)) return;
 
+      // (a split tool: each range with its item and that item's due date; the entry's: the soonest)
+      const dueOf = c => (byItem ? doing.find(d => d.unit.id === c.row.item_id) : dues[0]).field.input.value || "";
       const record = {
         id: entry ? entry.id : CalCheck.randomHex(8), tool_id: tool.tool_id, kind: "measurement",
-        date: date.input.value, due_date: due.input.value || "",
-        ranges: cards.map(c => ({ range: c.rangeIn.value.trim(), standard: c.stdIn.value.trim(), as_found: c.found.value.trim(),
-                                   after_adj: c.adj.value.trim(), result: c.row.result, remarks: c.remarks.value.trim() })),
+        date: date.input.value, due_date: saving.map(dueOf).filter(Boolean).sort()[0] || "",
+        ranges: saving.map(c => ({ range: c.rangeIn.value.trim(), standard: c.stdIn.value.trim(), as_found: c.found.value.trim(),
+                                    after_adj: c.adj.value.trim(), result: c.row.result, remarks: c.remarks.value.trim(),
+                                    ...(tool.items ? { item_id: c.row.item_id, due_date: dueOf(c) } : {}) })),
         note: "", status: "", status_before: "",
         by: entry ? entry.by : state.user.username, by_name: entry ? entry.by_name : state.user.name,
         saved_at: entry ? entry.saved_at : nowIso(), changed_at: entry ? nowIso() : null, sent_at: null,
@@ -953,24 +1148,31 @@
     }
 
     startForm();
+    const what = byItem ? `Whole tool · ${plural(units.length, "item")}` : units[0] ? units[0].name : tool.name;
     show(h("div", { class: "screen" },
-      formHeader(`${entry ? "Change" : "Calibrate"} ${tool.tool_id}`, [tool.name, tool.deviation].filter(Boolean).join(" · ")),
-      h("main", { class: "body with-actions", oninput: () => { state.formDirty = true; }, onclick: e => {
-        if (e.target.closest(".toggle, .slim")) state.formDirty = true;
+      formHeader(`${entry ? "Change" : "Calibrate"} ${tool.tool_id}`, [what, tool.deviation].filter(Boolean).join(" · ")),
+      h("main", { class: "body with-actions", oninput: () => { state.formDirty = true; showBlank(); }, onclick: e => {
+        if (e.target.closest(".toggle, .slim")) { state.formDirty = true; showBlank(); }
       } },
         errors,
-        h("div", { class: "pair" }, date.field, due.field),
+        byItem ? date.field : h("div", { class: "pair" }, date.field, due.field),
         h("p", { class: "small" }, `Inspector: ${entry ? entry.by_name : state.user.name}`),
-        cards.map(c => c.card),
+        byItem ? sections.flatMap(sec => [sec.head, ...sec.cards.map(c => c.card)]) : cards.map(c => c.card),
         h("div", { class: "pair" }, editRanges, allPass || h("span", {})),
         entry ? h("button", { type: "button", class: "link-btn danger", onclick: () => deleteEntry(entry) }, "Delete this entry") : null),
       h("div", { class: "actions single" },
         h("button", { class: "btn", onclick: saveCalibration }, entry ? "Save Changes" : "Save on this device"))));
   }
 
-  function customScreen(original, entry) {
+  // itemId: a split tool's item it's for (none: chosen on the screen - the whole tool, when every item was sent)
+  function customScreen(original, entry, itemId) {
     const tool = current(original);
     const quick = state.data.quick_entries || [];
+    const sent = sentItems(tool);
+    const wholeOk = tool.items && sent.length === tool.items.length;
+    const forItem = tool.items ? h("select", {},
+      (wholeOk ? [h("option", { value: "" }, "Whole tool (every item)")] : []).concat(sent.map(i => h("option", {
+        value: String(i.id), selected: String(i.id) === String(entry ? entry.item_id : itemId) }, i.name)))) : null;
     const statuses = state.data.statuses || STATUSES;
     const note = h("textarea", { rows: "4" });
     note.value = entry ? entry.note : "";
@@ -1007,6 +1209,7 @@
         note: note.value.trim(), status: status.value, status_before: statusBefore,
         by: entry ? entry.by : state.user.username, by_name: entry ? entry.by_name : state.user.name,
         saved_at: entry ? entry.saved_at : nowIso(), changed_at: entry ? nowIso() : null, sent_at: null,
+        ...(forItem ? { item_id: forItem.value ? Number(forItem.value) : null } : {}),
       };
       if (await storeEntry(record, entry)) {
         toast(entry ? "Changes saved on this device" : "Entry saved on this device");
@@ -1021,6 +1224,7 @@
         if (e.target.closest(".quick")) state.formDirty = true;
       } },
         errors,
+        forItem ? h("label", { class: "field" }, "For", forItem) : null,
         quick.length ? h("section", { class: "quick-list" }, h("h2", { class: "group" }, "Quick fill"), quickButtons) : null,
         h("label", { class: "field" }, "Entry", note),
         h("div", { class: "pair" }, date.field, due.field),
@@ -1036,7 +1240,7 @@
     const entry = state.work.entries.find(e => e.id === id);
     if (!entry) { go("#/completed"); return; }
     const tool = state.data.tools.find(t => t.tool_id === entry.tool_id);
-    if (canChange(entry) && tool) return entry.kind === "custom" ? customScreen(tool, entry) : calibrateScreen(tool, entry);
+    if (canChange(entry) && tool) return entry.kind === "custom" ? customScreen(tool, entry) : calibrateScreen(tool, entry, null);
 
     const why = entry.sent_at ? `Sent ${localDay(entry.sent_at)} at ${timeText(entry.sent_at)}: any correction is made at the desktop.`
       : entry.by !== state.user.username ? `Made by ${entry.by_name}: only they can change it.`
@@ -1054,7 +1258,7 @@
           ? h("section", { class: "card note-text" }, entry.note)
           : h("section", { class: "card" }, entry.ranges.map(r => h("div", { class: "line" },
               h("span", { class: "line-main" },
-                h("span", {}, `${r.range} · ${r.standard}`),
+                h("span", {}, [tool && r.item_id ? (itemOf(tool, r.item_id) || { name: "" }).name : "", r.range, r.standard].filter(Boolean).join(" · ")),
                 h("span", {}, `As Found ${r.as_found || "–"} · As Left ${r.after_adj || "–"}${r.remarks ? ` · ${r.remarks}` : ""}`)),
               h("span", { class: `result ${r.result === "fail" ? "Fail" : "Pass"}` }, r.result === "fail" ? "Fail" : "Pass")))))));
   }
@@ -1292,11 +1496,24 @@
     const hash = location.hash;
     if (hash !== "#/scan") stopCamera();
     if (hash === "#/scan") return scanScreen();
-    const part = prefix => decodeURIComponent(hash.slice(prefix.length));
+    // (#/tool/GMS001, or an item's: #/tool/GMS001/item/5 - #/cal/GMS001/item/all: the whole tool)
+    const part = prefix => {
+      const [id, unit] = hash.slice(prefix.length).split("/item/");
+      return [decodeURIComponent(id), unit === undefined ? null : decodeURIComponent(unit)];
+    };
     const tool = id => state.data.tools.find(t => t.tool_id === id);
-    if (hash.startsWith("#/tool/")) return toolScreen(part("#/tool/"));
-    if (hash.startsWith("#/cal/") && tool(part("#/cal/")) && !state.expired) return calibrateScreen(tool(part("#/cal/")), null);
-    if (hash.startsWith("#/custom/") && tool(part("#/custom/")) && !state.expired) return customScreen(tool(part("#/custom/")), null);
+    if (hash.startsWith("#/tool/")) return toolScreen(...part("#/tool/"));
+    if (hash.startsWith("#/pick/") && tool(part("#/pick/")[0]) && !state.expired) return pickScreen(tool(part("#/pick/")[0]));
+    if (hash.startsWith("#/cal/") && tool(part("#/cal/")[0]) && !state.expired) {
+      const [id, unit] = part("#/cal/");
+      const t = tool(id);
+      if (!t.items) return calibrateScreen(t, null, null);
+      const units = unit === "all" ? sentItems(t).map(i => i.id) : sentItems(t).filter(i => String(i.id) === unit).map(i => i.id);
+      if (!units.length) return go(itemHash("pick", t));       // (a split tool: which item first)
+      return calibrateScreen(t, null, units);
+    }
+    if (hash.startsWith("#/custom/") && tool(part("#/custom/")[0]) && !state.expired)
+      return customScreen(tool(part("#/custom/")[0]), null, part("#/custom/")[1]);
     if (hash.startsWith("#/entry/")) return entryScreen(part("#/entry/"));
     if (hash === "#/send") return sendScreen();
     state.tab = hash === "#/all" ? "all" : hash === "#/completed" ? "completed" : "due";
