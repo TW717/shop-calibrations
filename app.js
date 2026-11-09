@@ -19,7 +19,7 @@
   const STORE_WORK = "calcheck.work";        // the entries made here (locked)
   const STORE_WORK_INFO = "calcheck.workInfo";   // just {session, total, unsent}: readable before the PIN
   const FREE_TRIES = 5, WAIT_SECONDS = 60;
-  const APP_VERSION = "a32";                  // (shown on the login screen; the same as VERSION in sw.js)
+  const APP_VERSION = "a33";                  // (shown on the login screen; the same as VERSION in sw.js)
   const STATUSES = ["In Service", "Reference Only", "Damaged", "Removed from Service"];
 
   const app = document.getElementById("app");
@@ -958,6 +958,7 @@
     const due = dues[0].field;
     const errors = h("div", { role: "alert" });
     let unlocked = false;
+    const limitWords = `outside the ${tool.deviation_label || "Calibration Tolerance"} (${tool.deviation})`;
 
     // A due date follows the date (date + the interval) unless it's been changed by hand
     date.input.addEventListener("input", () => {
@@ -979,8 +980,8 @@
       const found = h("input", { type: "text", inputmode: numeric ? "decimal" : "text", value: row.as_found, autocomplete: "off" });
       const adj = h("input", { type: "text", inputmode: numeric ? "decimal" : "text", value: row.after_adj, autocomplete: "off" });
       const remarks = h("input", { type: "text", value: row.remarks, autocomplete: "off" });
-      const outNote = h("p", { class: "out-note" }, `Outside the ${tool.deviation_label || "Calibration Tolerance"} (${tool.deviation})`);
-      const shortNote = h("p", { class: "out-note" });     // (a reading with fewer decimal places than the range)
+      const outNote = h("p", { class: "out-note" });       // (how far past the limit, as on the desktop)
+      const shortNote = h("p", { class: "out-note short" });     // (a reading with fewer decimal places than the range)
       const pass = h("button", { type: "button", class: "toggle pass" }, "Pass");
       const fail = h("button", { type: "button", class: "toggle fail" }, "Fail");
 
@@ -1037,16 +1038,17 @@
       }
 
       function checkTolerance() {
-        const out = [found, adj].map(box => {
+        const out = [[found, "As Found"], [adj, "As Left"]].map(([box, name]) => {
           const bad = Rules.outOfTolerance(rangeIn.value, box.value, deviation);
           box.classList.toggle("out", bad);
-          return bad;
-        });
-        outNote.hidden = !out.some(Boolean);
-        // Range 2.000": 2.00 could hide 2.002, so it's outlined until typed to the range's decimals
+          return bad ? `${name} is ${Rules.pastLimit(rangeIn.value, box.value, deviation) || limitWords}` : null;
+        }).filter(Boolean);
+        outNote.hidden = !out.length;
+        outNote.textContent = out.join("\n");
+        // Range 2.000": 2.00 could hide 2.002, so it's outlined in amber until typed to the range's decimals
         const needed = [found, adj].map(box => {
           const n = Rules.readingTooShort(rangeIn.value, box.value);
-          if (n) box.classList.add("out");
+          box.classList.toggle("suspect", !!n);
           return n;
         }).find(Boolean);
         shortNote.hidden = !needed;
@@ -1093,6 +1095,57 @@
       for (const sec of sections) sec.blank.textContent = !entry && sectionBlank(sec) ? "Left blank: not recorded, its due date stays" : "";
     }
     showBlank();
+
+    // One line above Save, as under the desktop's table: what needs attention, and how far along it is
+    const statusDot = h("span", { class: "dot" }), statusText = h("span", { class: "cal-status-text" });
+    const statusProgress = h("span", { class: "cal-status-progress" });
+    const statusLine = h("div", { class: "cal-status", "aria-live": "polite" }, statusDot, statusText, statusProgress);
+    function statusMessage() {
+      const size = c => c.rangeIn.value.trim();
+      for (const c of cards)
+        if (c.asLeftMissing()) {
+          const beyond = Rules.pastLimit(c.rangeIn.value, c.found.value, deviation);
+          return [`${beyond ? `${size(c)} is ${beyond}.` : `${size(c)} failed.`} Enter its As Left after adjusting.`, "red"];
+        }
+      // A reading left behind that looks wrong (2 for 2.000", a word): its card isn't the one being typed in
+      for (const c of cards) {
+        if (c.card.contains(document.activeElement) || ["pass", "fail"].includes(c.row.result)) continue;
+        for (const [box, name] of [[c.found, "As Found"], [c.adj, "As Left"]]) {
+          const typed = box.value.trim();
+          if (!Rules.readingGiven(typed)) continue;
+          const needed = Rules.readingTooShort(c.rangeIn.value, typed);
+          const why = needed ? `it needs ${plural(needed, "decimal place")} (e.g. ${Rules.parseMeasurement(c.rangeIn.value).toFixed(needed)})`
+            : Rules.parseMeasurement(c.rangeIn.value) !== null && Rules.parseMeasurement(typed) === null ? "it isn't a reading" : null;
+          if (why) return [`${size(c)} ${name} ${typed} may be incorrect: ${why}.`, "yellow"];
+        }
+      }
+      const adjusted = [];                        // (came in outside, put right: As Left within)
+      for (const c of cards) {
+        if (Rules.outOfTolerance(c.rangeIn.value, c.adj.value, deviation))
+          return [`${size(c)} As Left is ${Rules.pastLimit(c.rangeIn.value, c.adj.value, deviation) || limitWords}.`, "red"];
+        if (Rules.outOfTolerance(c.rangeIn.value, c.found.value, deviation)) {
+          const words = Rules.pastLimit(c.rangeIn.value, c.found.value, deviation) || limitWords;
+          if (Rules.toleranceResult(c.rangeIn.value, c.adj.value, deviation) !== "pass") return [`${size(c)} As Found is ${words}.`, "red"];
+          adjusted.push([size(c), words]);
+        }
+      }
+      const waiting = cards.filter(c => !["pass", "fail"].includes(c.row.result));
+      if (waiting.length === cards.length && !cards.some(c => c.found.value.trim())) return ["Ready for the first reading", ""];
+      if (waiting.length) return [`Next: ${size(waiting[0])}`, ""];
+      if (adjusted.length)                        // (worth a look before saving: a typing error shows here too)
+        return [`${adjusted[0][0]} came in ${adjusted[0][1]}, adjusted back within tolerance${
+          adjusted.length > 1 ? ` (+${adjusted.length - 1} more)` : ""}.`, "yellow"];
+      return ["All ranges entered", "green"];
+    }
+    function updateStatus() {
+      const [text, colour] = statusMessage();
+      statusText.textContent = text;
+      statusDot.className = `dot ${colour}`.trim();
+      const done = cards.filter(c => ["pass", "fail"].includes(c.row.result)).length;
+      const failed = cards.filter(c => c.row.result === "fail").length;
+      statusProgress.textContent = `${done} of ${plural(cards.length, "range")} entered${failed ? ` · ${failed} failed` : ""}`;
+    }
+    updateStatus();
 
     function unlockRanges() {
       unlocked = true;
@@ -1179,16 +1232,16 @@
       : units[0] ? itemLabel(units[0]) : tool.name;
     show(h("div", { class: "screen" },
       formHeader(`${entry ? "Change" : "Calibrate"} ${tool.tool_id}`, [what, tool.deviation].filter(Boolean).join(" · ")),
-      h("main", { class: "body with-actions", oninput: () => { state.formDirty = true; showBlank(); }, onclick: e => {
-        if (e.target.closest(".toggle, .slim")) { state.formDirty = true; showBlank(); }
-      } },
+      h("main", { class: "body with-actions with-status", oninput: () => { state.formDirty = true; showBlank(); updateStatus(); }, onclick: e => {
+        if (e.target.closest(".toggle, .slim")) { state.formDirty = true; showBlank(); updateStatus(); }
+      }, onfocusin: updateStatus, onfocusout: () => setTimeout(updateStatus) },
         errors,
         byItem ? date.field : h("div", { class: "pair" }, date.field, due.field),
         h("p", { class: "small" }, `Inspector: ${entry ? entry.by_name : state.user.name}`),
         byItem ? sections.flatMap(sec => [sec.head, ...sec.cards.map(c => c.card)]) : cards.map(c => c.card),
         h("div", { class: "pair" }, editRanges, allPass || h("span", {})),
         entry ? h("button", { type: "button", class: "link-btn danger", onclick: () => deleteEntry(entry) }, "Delete this entry") : null),
-      h("div", { class: "actions single" },
+      h("div", { class: "actions single" }, statusLine,
         h("button", { class: "btn", onclick: saveCalibration }, entry ? "Save Changes" : "Save on this device"))));
   }
 

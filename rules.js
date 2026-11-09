@@ -135,6 +135,48 @@ const Rules = (() => {
     return toleranceResult(nominalText, readingText, deviation) === "fail";
   }
 
+  // How far a reading outside the tolerance is past its limit, in words (helpers.py past_limit):
+  // '.0009" over the limit' (the reading's decimal places, the range's unit); turns as
+  // '1/4 turn over the limit' (a fraction when the reading is one). null when within, or unclear
+  function pastLimit(nominalText, readingText, deviation) {
+    if (toleranceResult(nominalText, readingText, deviation) !== "fail") return null;
+    const nominal = measurementParts(nominalText), reading = measurementParts(readingText);
+    if (typeof deviation === "number") deviation = { plus: deviation, minus: deviation, unit: null, percent: false };
+    const unit = nominal[1] || reading[1] || deviation.unit;
+    const size = convert(nominal[0], nominal[1], unit), value = convert(reading[0], reading[1], unit);
+    const [plus, minus] = deviation.percent
+      ? [Math.abs(nominal[0]) * deviation.plus / 100, Math.abs(nominal[0]) * deviation.minus / 100]
+      : [convert(deviation.plus, deviation.unit, unit), convert(deviation.minus, deviation.unit, unit)];
+    const [amount, side] = value > size ? [value - size - plus, "over"] : [size - value - minus, "under"];
+    if ((UNITS[unit] || [])[0] === "turns") return `${turnsWords(amount, readingText)} ${side} the limit`;
+    const places = decimalPlaces(readingText.trim().replace(/"+$/, ""));
+    if (places === null) return null;
+    const shown = nominalText.trim().replace(/^[\d.\s]+/, "");
+    const figure = amount.toFixed(places);
+    return `${figure.startsWith("0.") && ["", '"'].includes(shown) ? figure.slice(1) : figure}${shown} ${side} the limit`;
+  }
+
+  // 0.25 -> '1/4 turn' for a reading written as a fraction, else '0.25 turn'; 1.5 -> '1-1/2 turns'
+  function turnsWords(amount, readingText) {
+    let figure;
+    if (readingText.includes("/")) {
+      let best = [Math.round(amount), 1];            // (the nearest fraction over 64 or less, as Fraction.limit_denominator)
+      for (let d = 2; d <= 64; d++)
+        if (Math.abs(Math.round(amount * d) / d - amount) < Math.abs(best[0] / best[1] - amount) - 1e-12) best = [Math.round(amount * d), d];
+      const whole = Math.floor(best[0] / best[1]), part = best[0] - whole * best[1];
+      const gcd = (a, b) => b ? gcd(b, a % b) : a, g = gcd(part, best[1]) || 1;
+      figure = [whole ? String(whole) : "", part ? `${part / g}/${best[1] / g}` : ""].filter(Boolean).join("-") || "0";
+    } else {
+      figure = String(+amount.toFixed(3));
+    }
+    return `${figure} turn${amount > 1 ? "s" : ""}`;
+  }
+
+  // False for a reading box left empty, or with only N/A or a dash in it (helpers.py reading_given)
+  function readingGiven(text) {
+    return !["", "N/A", "NA", "-", "–", "—"].includes((text || "").trim().toUpperCase().replace(/\.+$/, ""));
+  }
+
   // In an inch range a plain number gets the inch mark: 1.000 -> 1.000"
   function addInchMark(reading, rangeText) {
     if (!(rangeText || "").includes('"')) return reading;
@@ -211,6 +253,6 @@ const Rules = (() => {
     return iso(new Date());
   }
 
-  return { parseMeasurement, parseDeviation, toleranceResult, calibrationResult, decimalPlaces, readingTooShort, outOfTolerance, addInchMark, splitLeadingResult,
+  return { parseMeasurement, parseDeviation, toleranceResult, calibrationResult, decimalPlaces, readingTooShort, outOfTolerance, pastLimit, readingGiven, addInchMark, splitLeadingResult,
            remarksForResult, intervalIsNever, dueFromInterval, parseIso, today };
 })();
