@@ -19,7 +19,7 @@
   const STORE_WORK = "calcheck.work";        // the entries made here (locked)
   const STORE_WORK_INFO = "calcheck.workInfo";   // just {session, total, unsent}: readable before the PIN
   const FREE_TRIES = 5, WAIT_SECONDS = 60;
-  const APP_VERSION = "a34";                  // (shown on the login screen; the same as VERSION in sw.js)
+  const APP_VERSION = "a35";                  // (shown on the login screen; the same as VERSION in sw.js)
   const STATUSES = ["In Service", "Reference Only", "Damaged", "Removed from Service"];
 
   const app = document.getElementById("app");
@@ -940,6 +940,8 @@
   function conditionsRow(tool, entry) {
     const opts = state.data.conditions;
     if (!opts || !opts.on) return null;
+    // (a tool marked Record conditions, or every tool when the shop asks on all; an entry that has them)
+    if (!tool.record_conditions && opts.scope !== "all" && !(entry && (entry.env_temp || entry.env_humidity))) return null;
     const unit = opts.unit;
     let last = null;
     try { last = JSON.parse(load(LAST_CONDITIONS) || "null"); } catch (e) { last = null; }
