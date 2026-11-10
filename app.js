@@ -19,7 +19,7 @@
   const STORE_WORK = "calcheck.work";        // the entries made here (locked)
   const STORE_WORK_INFO = "calcheck.workInfo";   // just {session, total, unsent}: readable before the PIN
   const FREE_TRIES = 5, WAIT_SECONDS = 60;
-  const APP_VERSION = "a33";                  // (shown on the login screen; the same as VERSION in sw.js)
+  const APP_VERSION = "a34";                  // (shown on the login screen; the same as VERSION in sw.js)
   const STATUSES = ["In Service", "Reference Only", "Damaged", "Removed from Service"];
 
   const app = document.getElementById("app");
@@ -931,6 +931,95 @@
     }
   }
 
+  // ---------- Environmental Conditions (Admin Settings > App Features, on the desktop) ----------
+  // The room's temperature and humidity, once per calibration, as on the desktop's Calibrate:
+  // kept in °C whatever the shop shows; a new one starts from the last entered on this device
+  // today (the same room, tool after tool); outside the tool's Environment (when it reads as a
+  // range) or the shop's range, Save asks why. null when the session file has them off.
+  const LAST_CONDITIONS = "calcheck-last-conditions";
+  function conditionsRow(tool, entry) {
+    const opts = state.data.conditions;
+    if (!opts || !opts.on) return null;
+    const unit = opts.unit;
+    let last = null;
+    try { last = JSON.parse(load(LAST_CONDITIONS) || "null"); } catch (e) { last = null; }
+    const start = entry ? { temp: entry.env_temp, humidity: entry.env_humidity }
+      : last && last.day === Rules.today() ? last : { temp: null, humidity: null };
+    const startTemp = Rules.conditionNumber(start.temp || "");
+    const temp = h("input", { type: "text", inputmode: "decimal", autocomplete: "off", "aria-label": `Temperature °${unit}`,
+                              value: startTemp !== null && !Number.isNaN(startTemp) ? Rules.tidy(Rules.fromC(startTemp, unit)) : "" });
+    const humidity = opts.humidity
+      ? h("input", { type: "text", inputmode: "decimal", autocomplete: "off", "aria-label": "Humidity %RH", value: start.humidity || "" })
+      : null;
+    const own = Rules.toolRange(tool.parameter);
+    const [low, high] = own || [opts.range.tmin, opts.range.tmax];
+    const note = `${own ? "This tool" : "Shop range"}: ${Rules.tidy(Rules.fromC(low, unit))}–${Rules.tidy(Rules.fromC(high, unit))} °${unit}` +
+      (own ? " (its Environment)" : "") + (tool.record_conditions ? " · asked for if left blank" : "");
+
+    // (°C, %RH) typed, each null if blank; null for both when a box isn't a number
+    function values() {
+      const t = Rules.conditionNumber(temp.value), rh = humidity ? Rules.conditionNumber(humidity.value) : null;
+      if (Number.isNaN(t) || Number.isNaN(rh)) return null;
+      return [t === null ? null : Rules.toC(t, unit), rh];
+    }
+    function problems() {
+      const got = values();
+      return got ? Rules.conditionProblems(got[0], got[1], tool.parameter, opts) : ["The temperature and humidity are numbers (e.g. 21.5)"];
+    }
+    function colour() {
+      const bad = problems();
+      for (const [box, word] of [[temp, "Temperature"], [humidity, "Humidity"]])
+        if (box) box.classList.toggle("outside", bad.some(b => b.includes(word) || b.includes("numbers")));
+    }
+    for (const box of [temp, humidity]) if (box) box.addEventListener("input", colour);
+    colour();
+
+    const kept = v => v === null ? null : Rules.tidy(v);      // (as the desktop keeps them: text, one decimal)
+    const before = entry ? JSON.stringify([entry.env_temp || null, entry.env_humidity || null]) : null;
+    // Save's questions: {error} / {cancelled} / {readings, note (for Remarks)}
+    function ask() {
+      const got = values();
+      if (!got) return { error: "The temperature and humidity are numbers (e.g. 21.5), or leave them blank." };
+      const readings = { env_temp: kept(got[0]), env_humidity: kept(got[1]) };
+      const notes = [];
+      const blank = got[0] === null || (opts.humidity && got[1] === null);
+      if (!entry && tool.record_conditions && blank) {
+        if (!confirm(`${tool.tool_id} is marked Record conditions: the room's temperature${opts.humidity ? " and humidity" : ""} ` +
+                     "weren't entered.\n\nSave without them? A note saying so goes in its Remarks.\n(Cancel to go back and enter them.)"))
+          return { cancelled: true };
+        notes.push("Conditions not recorded");
+      }
+      // (a change to a saved entry asks again only if the readings changed)
+      const outside = Rules.conditionProblems(got[0], got[1], tool.parameter, opts);
+      if (outside.length && (!entry || JSON.stringify([readings.env_temp, readings.env_humidity]) !== before)) {
+        const reason = prompt(`${outside.join(".\n")}.\n\nYou can save it, with a reason: it goes into its Remarks.\n` +
+                              "(e.g. measured after the parts settled)", "");
+        if (reason === null) return { cancelled: true };
+        if (!reason.trim()) return { error: "Enter a reason to save with the conditions outside the range, or correct them." };
+        notes.push(`${outside.join("; ")}: ${reason.trim()}`);
+      }
+      return { readings, note: notes.join(" - ") };
+    }
+    function remember(readings) {
+      if (readings.env_temp !== null || readings.env_humidity !== null)
+        save(LAST_CONDITIONS, JSON.stringify({ day: Rules.today(), temp: readings.env_temp, humidity: readings.env_humidity }));
+    }
+    const part = h("div", { class: "conditions" },
+      h("div", { class: "pair" },
+        h("label", { class: "field" }, `Temp °${unit}`, temp),
+        humidity ? h("label", { class: "field" }, "Humidity %RH", humidity) : h("span", {})),
+      h("p", { class: "small" }, note));
+    return { part, problems, ask, remember };
+  }
+
+  // The room's conditions on a saved entry, in words: '21.5 °C · 45 %RH' (the shop's unit); "" when none
+  function conditionsShown(e) {
+    const unit = (state.data.conditions || {}).unit || "C";
+    const t = Rules.conditionNumber(e.env_temp || ""), rh = Rules.conditionNumber(e.env_humidity || "");
+    return [t !== null && !Number.isNaN(t) ? `${Rules.tidy(Rules.fromC(t, unit))} °${unit}` : "",
+            rh !== null && !Number.isNaN(rh) ? `${Rules.tidy(rh)} %RH` : ""].filter(Boolean).join(" · ");
+  }
+
   // unitIds: a split tool's items being calibrated (one, or every item sent: the
   // whole tool); null for a tool not split
   function calibrateScreen(original, entry, unitIds) {
@@ -959,6 +1048,7 @@
     const errors = h("div", { role: "alert" });
     let unlocked = false;
     const limitWords = `outside the ${tool.deviation_label || "Calibration Tolerance"} (${tool.deviation})`;
+    const env = conditionsRow(tool, entry);
 
     // A due date follows the date (date + the interval) unless it's been changed by hand
     date.input.addEventListener("input", () => {
@@ -1107,6 +1197,8 @@
           const beyond = Rules.pastLimit(c.rangeIn.value, c.found.value, deviation);
           return [`${beyond ? `${size(c)} is ${beyond}.` : `${size(c)} failed.`} Enter its As Left after adjusting.`, "red"];
         }
+      const outside = env ? env.problems() : [];          // (the room: outside the tool's or the shop's range)
+      if (outside.length) return [outside[0].includes("numbers") ? `${outside[0]}.` : `${outside[0]}: Save asks why.`, "yellow"];
       // A reading left behind that looks wrong (2 for 2.000", a word): its card isn't the one being typed in
       for (const c of cards) {
         if (c.card.contains(document.activeElement) || ["pass", "fail"].includes(c.row.result)) continue;
@@ -1208,6 +1300,17 @@
           : null;
       }).filter(Boolean);
       if (mismatches.length && !confirm(`${mismatches.join("\n")}\n\nSave anyway?`)) return;
+      let readings = { env_temp: null, env_humidity: null };
+      if (env) {
+        const asked = env.ask();
+        if (asked.error) return formError(errors, asked.error);
+        if (asked.cancelled) return;
+        if (asked.note) {                         // (into the first range's Remarks, as on the desktop)
+          const first = saving[0].remarks;
+          first.value = `${first.value.trim()}${first.value.trim() ? " - " : ""}${asked.note}`;
+        }
+        readings = asked.readings;
+      }
 
       // (a split tool: each range with its item and that item's due date; the entry's: the soonest)
       const dueOf = c => (byItem ? doing.find(d => d.unit.id === c.row.item_id) : dues[0]).field.input.value || "";
@@ -1220,8 +1323,10 @@
         note: "", status: "", status_before: "",
         by: entry ? entry.by : state.user.username, by_name: entry ? entry.by_name : state.user.name,
         saved_at: entry ? entry.saved_at : nowIso(), changed_at: entry ? nowIso() : null, sent_at: null,
+        ...(env ? readings : {}),
       };
       if (await storeEntry(record, entry)) {
+        if (env && !entry) env.remember(readings);
         toast(entry ? "Changes saved on this device" : "Calibration saved on this device");
         history.back();
       }
@@ -1237,6 +1342,7 @@
       }, onfocusin: updateStatus, onfocusout: () => setTimeout(updateStatus) },
         errors,
         byItem ? date.field : h("div", { class: "pair" }, date.field, due.field),
+        env ? env.part : null,
         h("p", { class: "small" }, `Inspector: ${entry ? entry.by_name : state.user.name}`),
         byItem ? sections.flatMap(sec => [sec.head, ...sec.cards.map(c => c.card)]) : cards.map(c => c.card),
         h("div", { class: "pair" }, editRanges, allPass || h("span", {})),
@@ -1334,7 +1440,8 @@
         h("section", { class: "card facts" },
           fact("Date", Dates.display(entry.date)), fact("Next due", entry.due_date ? Dates.display(entry.due_date) : "No due date"),
           fact("Inspector", entry.by_name), fact("Saved", timeText(entry.saved_at)),
-          entry.kind === "custom" ? fact("Tool status", entry.status) : null),
+          entry.kind === "custom" ? fact("Tool status", entry.status) : null,
+          conditionsShown(entry) ? fact("Conditions", conditionsShown(entry)) : null),
         entry.kind === "custom"
           ? h("section", { class: "card note-text" }, entry.note)
           : h("section", { class: "card" }, entry.ranges.map(r => h("div", { class: "line" },
@@ -1700,7 +1807,7 @@
     }
     if (hash.startsWith("#/custom/") && tool(part("#/custom/")[0]) && !state.expired)
       return customScreen(tool(part("#/custom/")[0]), null, part("#/custom/")[1]);
-    if (hash.startsWith("#/entry/")) return entryScreen(part("#/entry/"));
+    if (hash.startsWith("#/entry/")) return entryScreen(part("#/entry/")[0]);
     if (hash === "#/send") return sendScreen();
     state.tab = hash === "#/all" ? "all" : hash === "#/completed" ? "completed" : "due";
     if (state.tab === "all") return allScreen();

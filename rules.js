@@ -253,6 +253,59 @@ const Rules = (() => {
     return iso(new Date());
   }
 
+  // ---------- Environmental Conditions (conditions.py): the room's temperature and humidity ----------
+  const toC = (value, unit) => unit === "C" ? value : (value - 32) * 5 / 9;
+  const fromC = (value, unit) => unit === "C" ? value : value * 9 / 5 + 32;
+
+  // '21.5', ' 21,5 ', '21.5°' -> 21.5; blank -> null; not a number -> NaN
+  function conditionNumber(text) {
+    const t = (text || "").trim().replace(/,/g, ".").replace(/[°CFcf% ]+$/, "").trim();
+    if (!t) return null;
+    return new RegExp(`^[+-]?${NUMBER}$`).test(t) ? parseFloat(t) : NaN;
+  }
+
+  // 21.5 -> '21.5', 21.0 -> '21', 21.25 -> '21.2' (to one decimal, rounded as Python's round(): a tie to even)
+  function tidy(value) {
+    const tie = Number.isInteger(value * 4) && !Number.isInteger(value * 2);
+    const n = tie ? 2 * Math.round(value * 5) / 10 : Number(value.toFixed(1));
+    return Object.is(n, -0) ? "-0" : String(n);
+  }
+
+  // A tool's Environment as a temperature range in °C: [low, high], or null when it can't be
+  // read as one. '20°C +/- 3°C' -> [17, 23]; '68 °F ± 2' -> [18.9, 21.1]; '18-22 °C' -> [18, 22]
+  const DEGREES = String.raw`(?:\s*°\s*|\s*deg\s*)?\s*([CF])?`;
+  function toolRange(environment) {
+    const text = (environment || "").trim();
+    let m = new RegExp(String.raw`^(-?\d+(?:\.\d+)?)${DEGREES}\s*(?:\+/-|\+-|±)\s*(\d+(?:\.\d+)?)${DEGREES}$`, "i").exec(text);
+    if (m) {
+      const unit = (m[2] || m[4] || "C").toUpperCase(), mid = parseFloat(m[1]), plus = parseFloat(m[3]);
+      return [toC(mid - plus, unit), toC(mid + plus, unit)];
+    }
+    m = new RegExp(String.raw`^(-?\d+(?:\.\d+)?)${DEGREES}\s*(?:-|–|to)\s*(-?\d+(?:\.\d+)?)${DEGREES}$`, "i").exec(text);
+    if (m) {
+      const unit = (m[2] || m[4] || "C").toUpperCase();
+      const [low, high] = [parseFloat(m[1]), parseFloat(m[3])].sort((a, b) => a - b);
+      return [toC(low, unit), toC(high, unit)];
+    }
+    return null;
+  }
+
+  // What's outside its range, in words ([] when fine): the temperature (°C) against the tool's
+  // Environment (if it's a range) else the shop's; the humidity against the shop's.
+  // opts: the session file's conditions {humidity, unit, range {tmin, tmax, hmin, hmax}}
+  function conditionProblems(tempC, humidity, environment, opts) {
+    const { unit, range: limits } = opts;
+    const found = [];
+    const own = toolRange(environment);
+    const [low, high, whose] = own ? [own[0], own[1], "this tool's Environment"] : [limits.tmin, limits.tmax, "the shop's"];
+    if (tempC !== null && !(low - 1e-9 <= tempC && tempC <= high + 1e-9))
+      found.push(`Temperature ${tidy(fromC(tempC, unit))} °${unit} is outside ${whose} ${tidy(fromC(low, unit))}–${tidy(fromC(high, unit))} °${unit}`);
+    if (opts.humidity && humidity !== null && !(limits.hmin <= humidity && humidity <= limits.hmax))
+      found.push(`Humidity ${tidy(humidity)} %RH is outside the shop's ${tidy(limits.hmin)}–${tidy(limits.hmax)} %RH`);
+    return found;
+  }
+
   return { parseMeasurement, parseDeviation, toleranceResult, calibrationResult, decimalPlaces, readingTooShort, outOfTolerance, pastLimit, readingGiven, addInchMark, splitLeadingResult,
-           remarksForResult, intervalIsNever, dueFromInterval, parseIso, today };
+           remarksForResult, intervalIsNever, dueFromInterval, parseIso, today,
+           toC, fromC, conditionNumber, tidy, toolRange, conditionProblems };
 })();
