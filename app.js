@@ -19,7 +19,7 @@
   const STORE_WORK = "calcheck.work";        // the entries made here (locked)
   const STORE_WORK_INFO = "calcheck.workInfo";   // just {session, total, unsent}: readable before the PIN
   const FREE_TRIES = 5, WAIT_SECONDS = 60;
-  const APP_VERSION = "a35";                  // (shown on the login screen; the same as VERSION in sw.js)
+  const APP_VERSION = "a36";                  // (shown on the login screen; the same as VERSION in sw.js)
   const STATUSES = ["In Service", "Reference Only", "Damaged", "Removed from Service"];
 
   const app = document.getElementById("app");
@@ -937,6 +937,7 @@
   // today (the same room, tool after tool); outside the tool's Environment (when it reads as a
   // range) or the shop's range, Save asks why. null when the session file has them off.
   const LAST_CONDITIONS = "calcheck-last-conditions";
+  const SAVED_WITHOUT = "Saved without them";       // (conditions.SAVED_WITHOUT)
   function conditionsRow(tool, entry) {
     const opts = state.data.conditions;
     if (!opts || !opts.on) return null;
@@ -978,7 +979,7 @@
 
     const kept = v => v === null ? null : Rules.tidy(v);      // (as the desktop keeps them: text, one decimal)
     const before = entry ? JSON.stringify([entry.env_temp || null, entry.env_humidity || null]) : null;
-    // Save's questions: {error} / {cancelled} / {readings, note (for Remarks)}
+    // Save's questions: {error} / {cancelled} / {readings: env_temp, env_humidity, env_note (why saved anyway)}
     function ask() {
       const got = values();
       if (!got) return { error: "The temperature and humidity are numbers (e.g. 21.5), or leave them blank." };
@@ -987,20 +988,23 @@
       const blank = got[0] === null || (opts.humidity && got[1] === null);
       if (!entry && tool.record_conditions && blank) {
         if (!confirm(`${tool.tool_id} is marked Record conditions: the room's temperature${opts.humidity ? " and humidity" : ""} ` +
-                     "weren't entered.\n\nSave without them? A note saying so goes in its Remarks.\n(Cancel to go back and enter them.)"))
+                     "weren't entered.\n\nSave without them? The calibration notes that they weren't recorded.\n(Cancel to go back and enter them.)"))
           return { cancelled: true };
-        notes.push("Conditions not recorded");
+        notes.push(SAVED_WITHOUT);
       }
       // (a change to a saved entry asks again only if the readings changed)
       const outside = Rules.conditionProblems(got[0], got[1], tool.parameter, opts);
-      if (outside.length && (!entry || JSON.stringify([readings.env_temp, readings.env_humidity]) !== before)) {
-        const reason = prompt(`${outside.join(".\n")}.\n\nYou can save it, with a reason: it goes into its Remarks.\n` +
+      const changed = !entry || JSON.stringify([readings.env_temp, readings.env_humidity]) !== before;
+      if (outside.length && changed) {
+        const reason = prompt(`${outside.join(".\n")}.\n\nYou can save it, with a reason: it's kept with its conditions.\n` +
                               "(e.g. measured after the parts settled)", "");
         if (reason === null) return { cancelled: true };
         if (!reason.trim()) return { error: "Enter a reason to save with the conditions outside the range, or correct them." };
-        notes.push(`${outside.join("; ")}: ${reason.trim()}`);
+        notes.push(reason.trim());
       }
-      return { readings, note: notes.join(" - ") };
+      // (kept apart from Remarks, as on the desktop; a change that leaves the readings keeps the reason)
+      readings.env_note = notes.join(" - ") || (!changed && entry.env_note) || null;
+      return { readings };
     }
     function remember(readings) {
       if (readings.env_temp !== null || readings.env_humidity !== null)
@@ -1302,15 +1306,11 @@
           : null;
       }).filter(Boolean);
       if (mismatches.length && !confirm(`${mismatches.join("\n")}\n\nSave anyway?`)) return;
-      let readings = { env_temp: null, env_humidity: null };
+      let readings = { env_temp: null, env_humidity: null, env_note: null };
       if (env) {
         const asked = env.ask();
         if (asked.error) return formError(errors, asked.error);
         if (asked.cancelled) return;
-        if (asked.note) {                         // (into the first range's Remarks, as on the desktop)
-          const first = saving[0].remarks;
-          first.value = `${first.value.trim()}${first.value.trim() ? " - " : ""}${asked.note}`;
-        }
         readings = asked.readings;
       }
 
@@ -1443,7 +1443,8 @@
           fact("Date", Dates.display(entry.date)), fact("Next due", entry.due_date ? Dates.display(entry.due_date) : "No due date"),
           fact("Inspector", entry.by_name), fact("Saved", timeText(entry.saved_at)),
           entry.kind === "custom" ? fact("Tool status", entry.status) : null,
-          conditionsShown(entry) ? fact("Conditions", conditionsShown(entry)) : null),
+          conditionsShown(entry) ? fact("Conditions", conditionsShown(entry)) : null,
+          entry.env_note ? fact("Conditions note", entry.env_note) : null),
         entry.kind === "custom"
           ? h("section", { class: "card note-text" }, entry.note)
           : h("section", { class: "card" }, entry.ranges.map(r => h("div", { class: "line" },
